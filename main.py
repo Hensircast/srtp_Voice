@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from srtp_voice.audio_io import make_dummy_wav, play_wav, record_from_mic
+from srtp_voice.audio_io import make_dummy_wav, play_mp3, record_from_mic
 from srtp_voice.asr import ASRAdapter
 from srtp_voice.config import AppConfig
 from srtp_voice.llm import StrategyGenerator
@@ -31,7 +31,7 @@ def main() -> None:
     ensure_dir(cfg.output_dir)
 
     user_audio = cfg.output_dir / "user_input.wav"
-    reply_audio = cfg.output_dir / "reply.wav"
+    reply_audio = cfg.output_dir / "reply.mp3"
     action_file = cfg.output_dir / "last_action.json"
 
     if args.mode == "mic":
@@ -84,7 +84,7 @@ def main() -> None:
 
     print("[7/7] 播放/输出")
     if not args.no_play:
-        play_wav(reply_audio)
+        play_mp3(reply_audio)
     else:
         print("      --no-play 已启用，跳过播放")
 

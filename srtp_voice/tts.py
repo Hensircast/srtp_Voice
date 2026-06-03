@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import math
 import struct
-import subprocess
 import wave
 from pathlib import Path
 
@@ -11,30 +10,33 @@ from .config import AppConfig
 
 
 class TTSAdapter:
-    """TTS 适配器。mock 用于占位；edge_tts 用于真实语音合成；piper 后续可接本地小模型。"""
+    """TTS adapter for mock WAV, edge-tts MP3, and future local engines."""
 
     def __init__(self, cfg: AppConfig):
         self.cfg = cfg
 
-    def synthesize(self, text: str, out_wav: Path) -> None:
-        out_wav.parent.mkdir(parents=True, exist_ok=True)
+    def synthesize(self, text: str, out_audio: Path) -> None:
+        out_audio.parent.mkdir(parents=True, exist_ok=True)
 
         if self.cfg.tts_backend == "mock":
-            self._mock_tts(text, out_wav)
+            self._mock_tts(text, out_audio)
             return
 
         if self.cfg.tts_backend == "edge_tts":
-            self._edge_tts(text, out_wav)
+            self._edge_tts(text, out_audio)
             return
 
         if self.cfg.tts_backend == "piper":
-            self._piper_placeholder(text, out_wav)
+            self._piper_placeholder(text, out_audio)
             return
 
-        raise ValueError(f"未知 TTS_BACKEND: {self.cfg.tts_backend}")
+        raise ValueError(f"Unknown TTS_BACKEND: {self.cfg.tts_backend}")
 
     def _mock_tts(self, text: str, out_wav: Path) -> None:
-        """生成一段简单音调，只用于打通主流程，不是真实 TTS。"""
+        """Generate a simple WAV tone for offline pipeline checks."""
+        if out_wav.suffix.lower() != ".wav":
+            raise ValueError(f"mock TTS output must be a .wav file: {out_wav}")
+
         sample_rate = self.cfg.sample_rate
         seconds = min(4.0, max(0.8, len(text) * 0.045))
         n = int(seconds * sample_rate)
@@ -50,15 +52,12 @@ class TTSAdapter:
                 sample = int(2600 * env * math.sin(2 * math.pi * freq * i / sample_rate))
                 wf.writeframes(struct.pack("<h", sample))
 
-    def _edge_tts(self, text: str, out_wav: Path) -> None:
-        """
-        使用 edge-tts 生成真实语音。
-        注意：edge-tts 默认保存 mp3，这里优先保存 mp3，再尝试用 ffmpeg 转 wav。
-        如果电脑没有 ffmpeg，就直接把 mp3 路径打印出来。
-        """
-        import edge_tts
+    def _edge_tts(self, text: str, out_mp3: Path) -> None:
+        """Generate real speech with edge-tts and save the MP3 directly."""
+        if out_mp3.suffix.lower() != ".mp3":
+            raise ValueError(f"edge_tts output must be an .mp3 file: {out_mp3}")
 
-        mp3_path = out_wav.with_suffix(".mp3")
+        import edge_tts
 
         async def run() -> None:
             communicate = edge_tts.Communicate(
@@ -67,36 +66,12 @@ class TTSAdapter:
                 rate="+0%",
                 volume="+0%",
             )
-            await communicate.save(str(mp3_path))
+            await communicate.save(str(out_mp3))
 
         asyncio.run(run())
 
-        try:
-            subprocess.run(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-i",
-                    str(mp3_path),
-                    "-ar",
-                    str(self.cfg.sample_rate),
-                    "-ac",
-                    "1",
-                    str(out_wav),
-                ],
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        except Exception:
-            print(f"      edge-tts 已生成 mp3：{mp3_path}")
-            print("      未检测到 ffmpeg，暂时没有转换为 wav。")
-            print("      你可以安装 ffmpeg，或者后续把播放函数改成播放 mp3。")
+        if not out_mp3.exists() or out_mp3.stat().st_size == 0:
+            raise RuntimeError(f"edge-tts did not create a valid MP3 file: {out_mp3}")
 
-    def _piper_placeholder(self, text: str, out_wav: Path) -> None:
-        """
-        Piper 是本地小模型 TTS，后续可替换这里。
-        典型命令：
-        echo 你好 | piper --model zh_CN-huayan-medium.onnx --output_file outputs/reply.wav
-        """
-        raise NotImplementedError("请后续在这里接入 Piper 本地 TTS。")
+    def _piper_placeholder(self, text: str, out_audio: Path) -> None:
+        raise NotImplementedError("Piper local TTS is not connected yet.")

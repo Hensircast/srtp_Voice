@@ -166,7 +166,7 @@ pip install -r requirements.txt
 如果当前还没有 `requirements.txt`，可以先根据代码中实际使用的库手动安装，例如：
 
 ```powershell
-pip install python-dotenv sounddevice soundfile edge-tts pyserial
+pip install python-dotenv sounddevice soundfile edge-tts pygame pyserial
 ```
 
 然后生成依赖文件：
@@ -213,25 +213,29 @@ SERIAL_BAUDRATE=115200
 
 ## 7. How to Run
 
-在项目根目录下执行：
+M1 文本到语音测试：键盘输入文本，使用 edge-tts 生成 `outputs/reply.mp3`，再用 pygame 播放 MP3。
 
 ```powershell
 .\venv\Scripts\activate
+python scripts\test_tts.py
+```
+
+也可以直接传入文本，便于快速验证：
+
+```powershell
+python scripts\test_tts.py --text "你好，我是 SRTP 语音交互测试。"
+```
+
+运行主流程时，默认会在 console 模式下从键盘输入文本，并把 TTS 输出保存为 `outputs/reply.mp3`：
+
+```powershell
 python main.py
 ```
 
-如果主程序文件名不是 `main.py`，请根据实际文件名修改运行命令。
-
-例如：
+如果只生成 MP3、不播放：
 
 ```powershell
-python app.py
-```
-
-或：
-
-```powershell
-python run.py
+python scripts\test_tts.py --no-play
 ```
 
 ---
