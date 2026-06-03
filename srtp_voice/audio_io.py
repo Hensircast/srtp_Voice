@@ -48,6 +48,30 @@ def play_wav(path: Path) -> None:
     sd.wait()
 
 
+def play_mp3(path: Path) -> None:
+    """Play an MP3 file with pygame without decoding it through soundfile."""
+    if path.suffix.lower() != ".mp3":
+        raise ValueError(f"play_mp3 only accepts .mp3 files: {path}")
+    if not path.exists() or path.stat().st_size == 0:
+        raise FileNotFoundError(f"MP3 file is missing or empty: {path}")
+
+    try:
+        import pygame
+    except ImportError as exc:
+        raise RuntimeError("MP3 playback requires pygame: pip install pygame") from exc
+
+    pygame.mixer.init()
+    try:
+        pygame.mixer.music.load(str(path))
+        pygame.mixer.music.play()
+        clock = pygame.time.Clock()
+        while pygame.mixer.music.get_busy():
+            clock.tick(20)
+    finally:
+        pygame.mixer.music.unload()
+        pygame.mixer.quit()
+
+
 def read_wav_pcm16_mono(path: Path) -> tuple[int, List[int]]:
     """读取 wav 并尽量转成单声道 int16 列表。当前只处理 16-bit PCM，足够用于占位特征。"""
     with wave.open(str(path), "rb") as wf:

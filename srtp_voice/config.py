@@ -19,7 +19,7 @@ class AppConfig:
     llm_model: str = "deepseek-chat"
 
     # TTS 占位配置：默认生成 beep wav，保证代码能跑通。
-    tts_backend: str = "mock"  # mock / edge_tts / piper
+    tts_backend: str = "edge_tts"  # mock / edge_tts / piper
     tts_voice: str = "zh-CN-XiaoxiaoNeural"
 
     # ASR 占位配置：默认需要手动输入识别文本，后续替换为 SenseVoice / FunASR / Whisper。
@@ -36,7 +36,7 @@ class AppConfig:
             llm_base_url=os.getenv("LLM_BASE_URL", "https://api.deepseek.com/v1/chat/completions"),
             llm_api_key=os.getenv("LLM_API_KEY", ""),
             llm_model=os.getenv("LLM_MODEL", "deepseek-chat"),
-            tts_backend=os.getenv("TTS_BACKEND", "mock"),
+            tts_backend=os.getenv("TTS_BACKEND", "edge_tts"),
             tts_voice=os.getenv("TTS_VOICE", "zh-CN-XiaoxiaoNeural"),
             asr_backend=os.getenv("ASR_BACKEND", "mock"),
         )
