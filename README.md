@@ -238,6 +238,18 @@ python main.py
 python scripts\test_tts.py --no-play
 ```
 
+麦克风录音测试：默认录制 5 秒，16000 Hz，单声道，并保存到 `recordings/input.wav`。
+
+```powershell
+python scripts\test_record.py
+```
+
+也可以显式指定录音参数：
+
+```powershell
+python scripts\test_record.py --seconds 5 --sample-rate 16000 --channels 1 --output recordings\input.wav
+```
+
 ---
 
 ## 8. Basic Workflow
