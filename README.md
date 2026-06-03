@@ -262,6 +262,18 @@ python scripts\test_loop_text.py
 python scripts\test_loop_text.py --no-play
 ```
 
+M4 基础语音回路测试：录制 5 秒麦克风音频到 `recordings/input.wav`，使用占位 ASR 文本，生成占位 LLM 回复，再用 edge-tts 生成并播放 `outputs/reply.mp3`。
+
+```powershell
+python scripts\test_voice_loop.py
+```
+
+如果只验证录音、占位 ASR/LLM 和 MP3 生成，不播放：
+
+```powershell
+python scripts\test_voice_loop.py --no-play
+```
+
 ---
 
 ## 8. Basic Workflow
