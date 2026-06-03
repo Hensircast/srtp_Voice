@@ -20,7 +20,7 @@ def make_dummy_wav(path: Path, seconds: float = 1.0, sample_rate: int = 16000) -
             wf.writeframes(struct.pack("<h", sample))
 
 
-def record_from_mic(path: Path, seconds: float, sample_rate: int = 16000) -> None:
+def record_from_mic(path: Path, seconds: float, sample_rate: int = 16000, channels: int = 1) -> None:
     """固定时长录音。第一版先稳定跑通；后续可替换成 VAD 端点检测。"""
     try:
         import sounddevice as sd
@@ -29,9 +29,9 @@ def record_from_mic(path: Path, seconds: float, sample_rate: int = 16000) -> Non
         raise RuntimeError("mic 模式需要安装 sounddevice 和 soundfile：pip install sounddevice soundfile") from exc
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    audio = sd.rec(int(seconds * sample_rate), samplerate=sample_rate, channels=1, dtype="float32")
+    audio = sd.rec(int(seconds * sample_rate), samplerate=sample_rate, channels=channels, dtype="float32")
     sd.wait()
-    sf.write(str(path), audio, sample_rate)
+    sf.write(str(path), audio, sample_rate, subtype="PCM_16")
 
 
 def play_wav(path: Path) -> None:
