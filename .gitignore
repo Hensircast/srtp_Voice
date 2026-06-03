@@ -1,0 +1,43 @@
+﻿# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Secrets
+.env
+.env.*
+
+# Logs
+*.log
+logs/
+
+# Audio cache / recordings
+*.wav
+*.mp3
+*.pcm
+recordings/
+outputs/
+temp/
+tmp/
+
+# Model weights / large files
+*.pt
+*.pth
+*.onnx
+*.ckpt
+models/
+weights/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
