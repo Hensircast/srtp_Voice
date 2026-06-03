@@ -250,6 +250,18 @@ python scripts\test_record.py
 python scripts\test_record.py --seconds 5 --sample-rate 16000 --channels 1 --output recordings\input.wav
 ```
 
+M3 文本循环测试：终端输入一句话，生成本地占位 LLM 回复，使用 edge-tts 生成 `outputs/reply.mp3`，再用 pygame 播放。输入 `q` 或 `quit` 退出。
+
+```powershell
+python scripts\test_loop_text.py
+```
+
+如果只验证生成 MP3、不播放：
+
+```powershell
+python scripts\test_loop_text.py --no-play
+```
+
 ---
 
 ## 8. Basic Workflow
