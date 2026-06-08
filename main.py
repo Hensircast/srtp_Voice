@@ -128,6 +128,7 @@ def main() -> None:
     else:
         print("      --no-play 已启用，跳过播放")
     fsm.set(DialogueStage.IDLE)
+    save_json(state_file, {"trace": fsm.trace, "stage": fsm.stage.value})
 
     state = PipelineState(
         user_audio=str(user_audio),

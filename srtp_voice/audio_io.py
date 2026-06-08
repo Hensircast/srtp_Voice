@@ -92,23 +92,32 @@ def record_until_silence(path: Path, cfg: AppConfig) -> None:
 
             if not started:
                 pre_roll.append(frame)
+
                 if result.is_speech:
-                    started = True
-                    recorded.extend(list(pre_roll))
-                    recorded.append(frame)
-                    speech_frames = 1
+                    speech_frames += 1
                     silence_frames = 0
-                    print(f"      VAD 触发，开始缓存语音：rms={result.rms:.3f}")
+
+                    if speech_frames >= min_speech_frames:
+                        started = True
+                        recorded.extend(list(pre_roll))
+                        silence_frames = 0
+                        print(
+                            "      VAD 触发，开始缓存语音："
+                            f"rms={result.rms:.3f}, speech_frames={speech_frames}"
+                        )
+                else:
+                    speech_frames = 0
+                    silence_frames = 0
+
                 continue
 
             recorded.append(frame)
             if result.is_speech:
-                speech_frames += 1
                 silence_frames = 0
             else:
                 silence_frames += 1
 
-            if speech_frames >= min_speech_frames and silence_frames >= silence_frames_needed:
+            if silence_frames >= silence_frames_needed:
                 print("      检测到静音，结束录音。")
                 break
 
