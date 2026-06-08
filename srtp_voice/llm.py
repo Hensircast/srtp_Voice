@@ -36,7 +36,7 @@ class StrategyGenerator:
             "expression": expression,
             "gaze": "look_at_user",
             "blink": "natural",
-            "mouth_sync": "audio_energy_placeholder",
+            "mouth_sync": "short_time_energy",
             "tts_style": tts_style,
             "servo_targets_placeholder": {
                 "mouth_open": 0.35,

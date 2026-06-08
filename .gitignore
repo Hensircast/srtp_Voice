@@ -1,4 +1,8 @@
-﻿# Python
+﻿# Environment
+.env
+.env.*
+
+# Python cache
 __pycache__/
 *.pyc
 *.pyo
@@ -9,30 +13,32 @@ venv/
 .venv/
 env/
 
-# Secrets
-.env
-.env.*
+# Runtime outputs
+outputs/*
+!outputs/.gitkeep
 
-# Logs
-*.log
-logs/
+recordings/*
+!recordings/.gitkeep
 
-# Audio cache / recordings
+# Audio files
 *.wav
 *.mp3
 *.pcm
-recordings/
-outputs/
-temp/
-tmp/
+*.flac
 
-# Model weights / large files
-*.pt
-*.pth
-*.onnx
-*.ckpt
+# Model files
 models/
 weights/
+*.onnx
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.gguf
+
+# Logs
+logs/
+*.log
 
 # IDE
 .vscode/
