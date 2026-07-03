@@ -4,6 +4,18 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover
+    load_dotenv = None
+
+
+def env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
 
 @dataclass
 class AppConfig:
@@ -32,11 +44,19 @@ class AppConfig:
     max_record_seconds: float = 8.0
     pre_roll_ms: int = 300
 
-    # LLM：默认不用网络，走本地规则模板。
-    llm_backend: str = "mock"  # mock / openai_compatible
-    llm_base_url: str = "https://api.deepseek.com/v1/chat/completions"
-    llm_api_key: str = ""
-    llm_model: str = "deepseek-chat"
+    # LLM: V1.1 uses local runtimes only. Ollama is the default runtime.
+    llm_backend: str = "ollama"  # mock / ollama / lmstudio
+    llm_model: str = "qwen3:4b"
+    llm_ollama_base_url: str = "http://localhost:11434"
+    llm_ollama_chat_url: str = "http://localhost:11434/api/chat"
+    llm_lmstudio_base_url: str = "http://localhost:1234"
+    llm_lmstudio_chat_url: str = "http://localhost:1234/v1/chat/completions"
+    llm_fallback_to_mock: bool = False
+    llm_think: bool = False
+    llm_stream: bool = False
+    llm_temperature: float = 0.0
+    llm_max_tokens: int = 1024
+    llm_timeout_seconds: int = 180
 
     # TTS：默认生成 beep wav，保证代码能跑通。
     # edge_tts 用于联网演示；moss_tts_onnx/piper 为本地模型占位。
@@ -52,6 +72,10 @@ class AppConfig:
 
     @classmethod
     def from_env(cls) -> "AppConfig":
+        if load_dotenv is not None:
+            project_root = Path(__file__).resolve().parents[1]
+            load_dotenv(project_root / ".env")
+
         return cls(
             sample_rate=int(os.getenv("SAMPLE_RATE", "16000")),
             output_dir=Path(os.getenv("OUTPUT_DIR", "outputs")),
@@ -65,13 +89,21 @@ class AppConfig:
             silence_ms=int(os.getenv("SILENCE_MS", "800")),
             max_record_seconds=float(os.getenv("MAX_RECORD_SECONDS", "8.0")),
             pre_roll_ms=int(os.getenv("PRE_ROLL_MS", "300")),
-            llm_backend=os.getenv("LLM_BACKEND", "mock"),
-            llm_base_url=os.getenv("LLM_BASE_URL", "https://api.deepseek.com/v1/chat/completions"),
-            llm_api_key=os.getenv("LLM_API_KEY", ""),
-            llm_model=os.getenv("LLM_MODEL", "deepseek-chat"),
+            llm_backend=os.getenv("LLM_BACKEND", "ollama"),
+            llm_model=os.getenv("LLM_MODEL", "qwen3:4b"),
+            llm_ollama_base_url=os.getenv("LLM_OLLAMA_BASE_URL", "http://localhost:11434"),
+            llm_ollama_chat_url=os.getenv("LLM_OLLAMA_CHAT_URL", "http://localhost:11434/api/chat"),
+            llm_lmstudio_base_url=os.getenv("LLM_LMSTUDIO_BASE_URL", "http://localhost:1234"),
+            llm_lmstudio_chat_url=os.getenv("LLM_LMSTUDIO_CHAT_URL", "http://localhost:1234/v1/chat/completions"),
+            llm_fallback_to_mock=env_bool("LLM_FALLBACK_TO_MOCK", False),
+            llm_think=env_bool("LLM_THINK", False),
+            llm_stream=env_bool("LLM_STREAM", False),
+            llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0")),
+            llm_max_tokens=int(os.getenv("LLM_MAX_TOKENS", "1024")),
+            llm_timeout_seconds=int(os.getenv("LLM_TIMEOUT_SECONDS", "180")),
             tts_backend=os.getenv("TTS_BACKEND", "mock"),
             tts_voice=os.getenv("TTS_VOICE", "zh-CN-XiaoxiaoNeural"),
-            tts_async=os.getenv("TTS_ASYNC", "0") in {"1", "true", "True", "yes"},
+            tts_async=env_bool("TTS_ASYNC", False),
             asr_backend=os.getenv("ASR_BACKEND", "mock"),
             emotion_smooth_alpha=float(os.getenv("EMOTION_SMOOTH_ALPHA", "0.35")),
         )

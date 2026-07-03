@@ -5,6 +5,7 @@ soundfile>=0.12.1
 
 # LLM 使用 OpenAI-compatible API 时需要：
 requests>=2.31.0
+python-dotenv>=1.0.0
 
 # 串口输出到 Arduino/STM32/ESP32 时需要：
 pyserial>=3.5
