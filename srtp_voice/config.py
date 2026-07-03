@@ -33,7 +33,7 @@ class AppConfig:
     output_dir: Path = Path("outputs")
     memory_file: Path = Path("outputs/memory.json")
     state_file: Path = Path("outputs/emotion_state.json")
-    max_history_turns: int = 6
+    max_history_turns: int = 3
 
     # VAD / 录音控制
     vad_backend: str = "energy"  # energy / silero
@@ -46,16 +46,15 @@ class AppConfig:
 
     # LLM: V1.1 uses local runtimes only. Ollama is the default runtime.
     llm_backend: str = "ollama"  # mock / ollama / lmstudio
-    llm_model: str = "qwen3:4b"
+    llm_model: str = "qwen3:4b-instruct"
     llm_ollama_base_url: str = "http://localhost:11434"
     llm_ollama_chat_url: str = "http://localhost:11434/api/chat"
     llm_lmstudio_base_url: str = "http://localhost:1234"
     llm_lmstudio_chat_url: str = "http://localhost:1234/v1/chat/completions"
     llm_fallback_to_mock: bool = False
-    llm_think: bool = False
-    llm_stream: bool = False
     llm_temperature: float = 0.0
-    llm_max_tokens: int = 1024
+    llm_max_tokens: int = 512
+    llm_context_tokens: int = 8192
     llm_timeout_seconds: int = 180
 
     # TTS：默认生成 beep wav，保证代码能跑通。
@@ -81,7 +80,7 @@ class AppConfig:
             output_dir=Path(os.getenv("OUTPUT_DIR", "outputs")),
             memory_file=Path(os.getenv("MEMORY_FILE", "outputs/memory.json")),
             state_file=Path(os.getenv("STATE_FILE", "outputs/emotion_state.json")),
-            max_history_turns=int(os.getenv("MAX_HISTORY_TURNS", "6")),
+            max_history_turns=int(os.getenv("MAX_HISTORY_TURNS", "3")),
             vad_backend=os.getenv("VAD_BACKEND", "energy"),
             vad_threshold=float(os.getenv("VAD_THRESHOLD", "0.018")),
             frame_ms=int(os.getenv("FRAME_MS", "32")),
@@ -90,16 +89,15 @@ class AppConfig:
             max_record_seconds=float(os.getenv("MAX_RECORD_SECONDS", "8.0")),
             pre_roll_ms=int(os.getenv("PRE_ROLL_MS", "300")),
             llm_backend=os.getenv("LLM_BACKEND", "ollama"),
-            llm_model=os.getenv("LLM_MODEL", "qwen3:4b"),
+            llm_model=os.getenv("LLM_MODEL", "qwen3:4b-instruct"),
             llm_ollama_base_url=os.getenv("LLM_OLLAMA_BASE_URL", "http://localhost:11434"),
             llm_ollama_chat_url=os.getenv("LLM_OLLAMA_CHAT_URL", "http://localhost:11434/api/chat"),
             llm_lmstudio_base_url=os.getenv("LLM_LMSTUDIO_BASE_URL", "http://localhost:1234"),
             llm_lmstudio_chat_url=os.getenv("LLM_LMSTUDIO_CHAT_URL", "http://localhost:1234/v1/chat/completions"),
             llm_fallback_to_mock=env_bool("LLM_FALLBACK_TO_MOCK", False),
-            llm_think=env_bool("LLM_THINK", False),
-            llm_stream=env_bool("LLM_STREAM", False),
             llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0")),
-            llm_max_tokens=int(os.getenv("LLM_MAX_TOKENS", "1024")),
+            llm_max_tokens=int(os.getenv("LLM_MAX_TOKENS", "512")),
+            llm_context_tokens=int(os.getenv("LLM_CONTEXT_TOKENS", "8192")),
             llm_timeout_seconds=int(os.getenv("LLM_TIMEOUT_SECONDS", "180")),
             tts_backend=os.getenv("TTS_BACKEND", "mock"),
             tts_voice=os.getenv("TTS_VOICE", "zh-CN-XiaoxiaoNeural"),

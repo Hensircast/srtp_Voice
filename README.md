@@ -70,25 +70,24 @@ V1.1 默认使用 Ollama 作为本地 LLM 运行时，不连接 DeepSeek、OpenA
 
 ```powershell
 ollama serve
-ollama pull qwen3:4b
+ollama pull qwen3:4b-instruct
 ```
 
 配置 `.env`：
 
 ```text
 LLM_BACKEND=ollama
-LLM_MODEL=qwen3:4b
+LLM_MODEL=qwen3:4b-instruct
 LLM_OLLAMA_BASE_URL=http://localhost:11434
 LLM_OLLAMA_CHAT_URL=http://localhost:11434/api/chat
 LLM_FALLBACK_TO_MOCK=0
-LLM_THINK=0
-LLM_STREAM=0
 LLM_TEMPERATURE=0
-LLM_MAX_TOKENS=1024
+LLM_MAX_TOKENS=512
+LLM_CONTEXT_TOKENS=8192
 LLM_TIMEOUT_SECONDS=180
 ```
 
-Ollama 使用原生 `/api/chat`，请求中会设置 `stream=false`、`think=false`、完整 JSON Schema `format`、`temperature=0` 和 `num_predict=1024`，用于约束 qwen3 输出结构化 JSON。若 Ollama 返回 `done_reason=length`，表示模型输出被截断，程序会明确报错，不会尝试修补半截 JSON；可增大 `LLM_MAX_TOKENS` 后重试。
+Ollama 使用原生 `/api/chat`，请求中会设置 `stream=false`、完整 JSON Schema `format`、`temperature=0`、`num_predict=512` 和 `num_ctx=8192`，并且不会发送 `think` 字段，用于约束 qwen3 instruct 模型输出结构化 JSON。历史记录只会传入最近 `MAX_HISTORY_TURNS=3` 轮的 `user_text` 和 `reply_text`，不会把 action、唇动、串口包或状态机详情放进 LLM prompt。若 Ollama 返回 `done_reason=length`，表示模型输出被截断，程序会明确报错，不会尝试修补半截 JSON；可增大 `LLM_MAX_TOKENS` 后重试。若报错 `exceed_context_size_error`，请增大 `LLM_CONTEXT_TOKENS` 或减少历史。
 
 运行：
 

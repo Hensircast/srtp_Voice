@@ -24,6 +24,11 @@ DEFAULT_ACTION: Dict[str, Any] = {
 }
 
 
+EXPRESSION_VALUES = {"neutral", "neutral_smile", "happy", "concerned", "sad", "surprised"}
+GAZE_VALUES = {"look_at_user", "center", "left", "right"}
+BLINK_VALUES = {"natural", "slow", "frequent", "none"}
+
+
 OLLAMA_STRATEGY_SCHEMA: Dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -31,26 +36,26 @@ OLLAMA_STRATEGY_SCHEMA: Dict[str, Any] = {
         "action": {
             "type": "object",
             "properties": {
-                "expression": {"type": "string"},
-                "gaze": {"type": "string"},
-                "blink": {"type": "string"},
-                "mouth_sync": {"type": "string"},
+                "expression": {"type": "string", "enum": sorted(EXPRESSION_VALUES)},
+                "gaze": {"type": "string", "enum": sorted(GAZE_VALUES)},
+                "blink": {"type": "string", "enum": sorted(BLINK_VALUES)},
+                "mouth_sync": {"type": "string", "const": "short_time_energy"},
                 "tts_style": {
                     "type": "object",
                     "properties": {
-                        "speed": {"type": "number"},
-                        "pitch": {"type": "number"},
-                        "volume": {"type": "number"},
+                        "speed": {"type": "number", "minimum": 0.8, "maximum": 1.2},
+                        "pitch": {"type": "number", "minimum": -1.0, "maximum": 1.0},
+                        "volume": {"type": "number", "minimum": 0.5, "maximum": 1.0},
                     },
                     "required": ["speed", "pitch", "volume"],
                 },
                 "servo_targets_placeholder": {
                     "type": "object",
                     "properties": {
-                        "mouth_open": {"type": "number"},
-                        "left_eye": {"type": "number"},
-                        "right_eye": {"type": "number"},
-                        "brow": {"type": "number"},
+                        "mouth_open": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                        "left_eye": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                        "right_eye": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                        "brow": {"type": "number", "minimum": 0.0, "maximum": 1.0},
                     },
                     "required": ["mouth_open", "left_eye", "right_eye", "brow"],
                 },
@@ -132,20 +137,13 @@ class StrategyGenerator:
 
         payload = {
             "model": self.cfg.llm_model,
-            "messages": [
-                {"role": "system", "content": self._system_prompt()},
-                {"role": "user", "content": json.dumps({
-                    "user_text": user_text,
-                    "speech_emotion": emotion.to_dict(),
-                    "history": history[-self.cfg.max_history_turns:],
-                }, ensure_ascii=False)},
-            ],
-            "stream": self.cfg.llm_stream,
-            "think": self.cfg.llm_think,
+            "messages": self._build_messages(user_text, emotion, history),
+            "stream": False,
             "format": OLLAMA_STRATEGY_SCHEMA,
             "options": {
                 "temperature": self.cfg.llm_temperature,
                 "num_predict": self.cfg.llm_max_tokens,
+                "num_ctx": self.cfg.llm_context_tokens,
             },
         }
 
@@ -156,7 +154,13 @@ class StrategyGenerator:
             raise RuntimeError("Ollama request timed out. Check the local model runtime.") from exc
         except requests.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else "unknown"
-            raise RuntimeError(f"Ollama returned HTTP {status}. Check the loaded model and local server.") from exc
+            response_text = exc.response.text[:500] if exc.response is not None else ""
+            detail = f" Response body: {response_text}" if response_text else ""
+            context_hint = self._context_error_hint(response_text)
+            raise RuntimeError(
+                f"Ollama returned HTTP {status}. Check the loaded model and local server."
+                f"{context_hint}{detail}"
+            ) from exc
         except requests.RequestException as exc:
             raise RuntimeError(f"Cannot connect to Ollama at {self.cfg.llm_ollama_chat_url}.") from exc
 
@@ -198,19 +202,12 @@ class StrategyGenerator:
 
         payload = {
             "model": self.cfg.llm_model,
-            "messages": [
-                {"role": "system", "content": self._system_prompt()},
-                {"role": "user", "content": json.dumps({
-                    "user_text": user_text,
-                    "speech_emotion": emotion.to_dict(),
-                    "history": history[-self.cfg.max_history_turns:],
-                }, ensure_ascii=False)},
-            ],
+            "messages": self._build_messages(user_text, emotion, history),
             "temperature": 0.4,
         }
 
         try:
-            resp = requests.post(chat_url, json=payload, timeout=60)
+            resp = requests.post(chat_url, json=payload, timeout=self.cfg.llm_timeout_seconds)
             resp.raise_for_status()
         except requests.Timeout as exc:
             raise RuntimeError(f"{runtime_name} request timed out. Check the local model runtime.") from exc
@@ -275,7 +272,59 @@ class StrategyGenerator:
             "JSON 必须包含 reply_text 和 action。"
             "reply_text 必须是非空字符串。"
             "action 必须是对象，并可包含 expression, gaze, blink, mouth_sync, tts_style, servo_targets_placeholder。"
+            "数字、代号、型号、姓名、日期和专有名词必须逐字保留。"
+            "查询历史事实时必须依据历史消息原文回答。"
+            "不得近似改写、猜测或替换历史代号。"
             "不要输出 Markdown，不要输出解释文字。"
+        )
+
+    def _build_messages(
+        self,
+        user_text: str,
+        emotion: EmotionResult,
+        history: List[Dict[str, Any]],
+    ) -> List[Dict[str, str]]:
+        messages = [{"role": "system", "content": self._system_prompt()}]
+        for item in history[-self.cfg.max_history_turns:]:
+            if not isinstance(item, dict):
+                continue
+            history_user = item.get("user_text")
+            history_reply = item.get("reply_text")
+            if isinstance(history_user, str) and history_user.strip():
+                messages.append({"role": "user", "content": history_user})
+            if isinstance(history_reply, str) and history_reply.strip():
+                messages.append({"role": "assistant", "content": history_reply})
+
+        current_content = (
+            f"当前用户原文：{user_text}\n"
+            f"语音情绪JSON：{json.dumps(emotion.to_dict(), ensure_ascii=False)}"
+        )
+        messages.append({"role": "user", "content": current_content})
+        return messages
+
+    @staticmethod
+    def _context_error_hint(response_text: str) -> str:
+        if "exceeds the available context size" not in response_text and "exceed_context_size_error" not in response_text:
+            return ""
+
+        current = "unknown"
+        context = "unknown"
+        try:
+            outer = json.loads(response_text)
+            inner = outer.get("error")
+            if isinstance(inner, str):
+                inner = json.loads(inner)
+            if isinstance(inner, dict):
+                error = inner.get("error", inner)
+                if isinstance(error, dict):
+                    current = str(error.get("n_prompt_tokens", current))
+                    context = str(error.get("n_ctx", context))
+        except (ValueError, TypeError):
+            pass
+
+        return (
+            f" Context size exceeded: request_tokens={current}, context_size={context}. "
+            "Increase LLM_CONTEXT_TOKENS or reduce history."
         )
 
     @classmethod
@@ -362,4 +411,65 @@ class StrategyGenerator:
             else:
                 normalized[key] = value
 
+        normalized["expression"] = StrategyGenerator._enum_or_default(
+            normalized.get("expression"),
+            EXPRESSION_VALUES,
+            DEFAULT_ACTION["expression"],
+        )
+        normalized["gaze"] = StrategyGenerator._enum_or_default(
+            normalized.get("gaze"),
+            GAZE_VALUES,
+            DEFAULT_ACTION["gaze"],
+        )
+        normalized["blink"] = StrategyGenerator._enum_or_default(
+            normalized.get("blink"),
+            BLINK_VALUES,
+            DEFAULT_ACTION["blink"],
+        )
+        normalized["mouth_sync"] = "short_time_energy"
+
+        normalized["tts_style"] = {
+            "speed": StrategyGenerator._number_in_range(
+                normalized["tts_style"].get("speed"),
+                0.8,
+                1.2,
+                DEFAULT_ACTION["tts_style"]["speed"],
+            ),
+            "pitch": StrategyGenerator._number_in_range(
+                normalized["tts_style"].get("pitch"),
+                -1.0,
+                1.0,
+                DEFAULT_ACTION["tts_style"]["pitch"],
+            ),
+            "volume": StrategyGenerator._number_in_range(
+                normalized["tts_style"].get("volume"),
+                0.5,
+                1.0,
+                DEFAULT_ACTION["tts_style"]["volume"],
+            ),
+        }
+        normalized["servo_targets_placeholder"] = {
+            name: StrategyGenerator._number_in_range(
+                normalized["servo_targets_placeholder"].get(name),
+                0.0,
+                1.0,
+                DEFAULT_ACTION["servo_targets_placeholder"][name],
+            )
+            for name in DEFAULT_ACTION["servo_targets_placeholder"]
+        }
+
         return normalized
+
+    @staticmethod
+    def _enum_or_default(value: Any, allowed: set[str], default: str) -> str:
+        if isinstance(value, str) and value in allowed:
+            return value
+        return default
+
+    @staticmethod
+    def _number_in_range(value: Any, minimum: float, maximum: float, default: float) -> float:
+        if isinstance(value, bool):
+            return default
+        if not isinstance(value, (int, float)):
+            return default
+        return max(minimum, min(maximum, float(value)))
