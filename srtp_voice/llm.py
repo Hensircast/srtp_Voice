@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List
 
-import requests
+try:
+    import requests
+except ModuleNotFoundError:  # pragma: no cover - exercised by monkeypatch tests
+    requests = None
 
 from .config import AppConfig
 from .types import EmotionResult, StrategyResult
@@ -78,6 +81,15 @@ class LLMResponseError(RuntimeError):
     pass
 
 
+def _require_requests():
+    if requests is None:
+        raise RuntimeError(
+            "The requests package is required for Ollama and LM Studio backends. "
+            "Install it with: python -m pip install requests"
+        )
+    return requests
+
+
 class StrategyGenerator:
     """Generate reply text and structured robot action strategy."""
 
@@ -133,6 +145,7 @@ class StrategyGenerator:
         emotion: EmotionResult,
         history: List[Dict[str, Any]],
     ) -> StrategyResult:
+        req = _require_requests()
         self._check_ollama()
 
         payload = {
@@ -148,11 +161,11 @@ class StrategyGenerator:
         }
 
         try:
-            resp = requests.post(self.cfg.llm_ollama_chat_url, json=payload, timeout=self.cfg.llm_timeout_seconds)
+            resp = req.post(self.cfg.llm_ollama_chat_url, json=payload, timeout=self.cfg.llm_timeout_seconds)
             resp.raise_for_status()
-        except requests.Timeout as exc:
+        except req.Timeout as exc:
             raise RuntimeError("Ollama request timed out. Check the local model runtime.") from exc
-        except requests.HTTPError as exc:
+        except req.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else "unknown"
             response_text = exc.response.text[:500] if exc.response is not None else ""
             detail = f" Response body: {response_text}" if response_text else ""
@@ -161,7 +174,7 @@ class StrategyGenerator:
                 f"Ollama returned HTTP {status}. Check the loaded model and local server."
                 f"{context_hint}{detail}"
             ) from exc
-        except requests.RequestException as exc:
+        except req.RequestException as exc:
             raise RuntimeError(f"Cannot connect to Ollama at {self.cfg.llm_ollama_chat_url}.") from exc
 
         try:
@@ -195,6 +208,7 @@ class StrategyGenerator:
         chat_url: str,
         runtime_name: str,
     ) -> StrategyResult:
+        req = _require_requests()
         if runtime_name == "Ollama":
             self._check_ollama()
         elif runtime_name == "LM Studio":
@@ -207,14 +221,14 @@ class StrategyGenerator:
         }
 
         try:
-            resp = requests.post(chat_url, json=payload, timeout=self.cfg.llm_timeout_seconds)
+            resp = req.post(chat_url, json=payload, timeout=self.cfg.llm_timeout_seconds)
             resp.raise_for_status()
-        except requests.Timeout as exc:
+        except req.Timeout as exc:
             raise RuntimeError(f"{runtime_name} request timed out. Check the local model runtime.") from exc
-        except requests.HTTPError as exc:
+        except req.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else "unknown"
             raise RuntimeError(f"{runtime_name} returned HTTP {status}. Check the loaded model and local server.") from exc
-        except requests.RequestException as exc:
+        except req.RequestException as exc:
             raise RuntimeError(f"Cannot connect to {runtime_name} at {chat_url}.") from exc
 
         try:
@@ -226,12 +240,13 @@ class StrategyGenerator:
         return self.parse_strategy_content(content)
 
     def _check_ollama(self) -> None:
+        req = _require_requests()
         tags_url = self.cfg.llm_ollama_base_url.rstrip("/") + "/api/tags"
         try:
-            resp = requests.get(tags_url, timeout=5)
+            resp = req.get(tags_url, timeout=5)
             resp.raise_for_status()
             data = resp.json()
-        except requests.RequestException as exc:
+        except req.RequestException as exc:
             raise RuntimeError(
                 "Ollama is not running. Start it with PowerShell command: ollama serve"
             ) from exc
@@ -246,12 +261,13 @@ class StrategyGenerator:
             )
 
     def _check_lmstudio(self) -> None:
+        req = _require_requests()
         models_url = self.cfg.llm_lmstudio_base_url.rstrip("/") + "/v1/models"
         try:
-            resp = requests.get(models_url, timeout=5)
+            resp = req.get(models_url, timeout=5)
             resp.raise_for_status()
             data = resp.json()
-        except requests.RequestException as exc:
+        except req.RequestException as exc:
             raise RuntimeError(
                 "LM Studio local server is not running. Start LM Studio, load a model, and enable Local Server."
             ) from exc
@@ -402,10 +418,14 @@ class StrategyGenerator:
         normalized["servo_targets_placeholder"] = dict(DEFAULT_ACTION["servo_targets_placeholder"])
 
         for key, value in action.items():
-            if key == "tts_style" and isinstance(value, dict):
-                normalized["tts_style"].update(value)
-            elif key == "servo_targets_placeholder" and isinstance(value, dict):
-                normalized["servo_targets_placeholder"].update(value)
+            if key == "tts_style":
+                if isinstance(value, dict):
+                    normalized["tts_style"].update(value)
+                continue
+            if key == "servo_targets_placeholder":
+                if isinstance(value, dict):
+                    normalized["servo_targets_placeholder"].update(value)
+                continue
             elif key in DEFAULT_ACTION:
                 normalized[key] = value
             else:

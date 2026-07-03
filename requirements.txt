@@ -13,6 +13,9 @@ pyserial>=3.5
 # 临时联网 TTS 演示：
 edge-tts>=6.1.10
 
+# 测试时需要安装
+pytest>=9
+
 # 真实模型接入时按需安装：
 # onnxruntime
 # onnxruntime-gpu

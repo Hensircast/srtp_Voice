@@ -20,6 +20,30 @@ def assert_true(name: str, condition: bool) -> None:
     print(f"ok - {name}")
 
 
+class FakeRequestException(Exception):
+    pass
+
+
+class FakeTimeout(FakeRequestException):
+    pass
+
+
+class FakeHTTPError(FakeRequestException):
+    def __init__(self, response=None):
+        super().__init__("HTTP error")
+        self.response = response
+
+
+class FakeRequests:
+    Timeout = FakeTimeout
+    HTTPError = FakeHTTPError
+    RequestException = FakeRequestException
+
+    def __init__(self, get_func, post_func):
+        self.get = get_func
+        self.post = post_func
+
+
 def test_pure_json() -> None:
     result = StrategyGenerator.parse_strategy_content(
         '{"reply_text":"你好","action":{"expression":"happy"}}'
@@ -110,6 +134,43 @@ def test_action_normal_response_unchanged() -> None:
     assert_true("valid servo unchanged", result.action["servo_targets_placeholder"]["mouth_open"] == 0.6)
 
 
+def test_invalid_nested_action_keeps_defaults() -> None:
+    for bad_tts in ["fast", [], None, True]:
+        result = StrategyGenerator.parse_strategy_content(
+            json.dumps({"reply_text": "ok", "action": {"tts_style": bad_tts}})
+        )
+        assert_true(f"bad tts default speed {bad_tts!r}", result.action["tts_style"]["speed"] == 1.0)
+        assert_true(f"bad tts default pitch {bad_tts!r}", result.action["tts_style"]["pitch"] == 0.0)
+        assert_true(f"bad tts default volume {bad_tts!r}", result.action["tts_style"]["volume"] == 0.9)
+
+    for bad_servo in [[], "invalid", None, False]:
+        result = StrategyGenerator.parse_strategy_content(
+            json.dumps({"reply_text": "ok", "action": {"servo_targets_placeholder": bad_servo}})
+        )
+        assert_true(f"bad servo default mouth {bad_servo!r}", result.action["servo_targets_placeholder"]["mouth_open"] == 0.35)
+        assert_true(f"bad servo default left {bad_servo!r}", result.action["servo_targets_placeholder"]["left_eye"] == 0.5)
+        assert_true(f"bad servo default right {bad_servo!r}", result.action["servo_targets_placeholder"]["right_eye"] == 0.5)
+        assert_true(f"bad servo default brow {bad_servo!r}", result.action["servo_targets_placeholder"]["brow"] == 0.4)
+
+
+def test_partial_nested_action_merges_and_clamps() -> None:
+    result = StrategyGenerator.parse_strategy_content(
+        json.dumps({
+            "reply_text": "ok",
+            "action": {
+                "tts_style": {"speed": 1.5},
+                "servo_targets_placeholder": {"mouth_open": -1.0, "brow": 2.0},
+            },
+        })
+    )
+    assert_true("partial tts speed clamps", result.action["tts_style"]["speed"] == 1.2)
+    assert_true("partial tts pitch default", result.action["tts_style"]["pitch"] == 0.0)
+    assert_true("partial tts volume default", result.action["tts_style"]["volume"] == 0.9)
+    assert_true("partial servo mouth clamps", result.action["servo_targets_placeholder"]["mouth_open"] == 0.0)
+    assert_true("partial servo left default", result.action["servo_targets_placeholder"]["left_eye"] == 0.5)
+    assert_true("partial servo brow clamps", result.action["servo_targets_placeholder"]["brow"] == 1.0)
+
+
 def test_invalid_json() -> None:
     try:
         StrategyGenerator.parse_strategy_content("not json")
@@ -125,6 +186,71 @@ def test_mock_backend() -> None:
     result = StrategyGenerator(cfg).generate("测试", emotion, history=[])
     assert_true("mock reply", bool(result.reply_text))
     assert_true("mock action", isinstance(result.action, dict))
+
+
+def test_mock_backend_without_requests() -> None:
+    import srtp_voice.llm as llm_module
+
+    old_requests = llm_module.requests
+    llm_module.requests = None
+    try:
+        cfg = AppConfig(llm_backend="mock")
+        emotion = EmotionResult(label="neutral", intensity=0.35, confidence=0.5, features={})
+        result = StrategyGenerator(cfg).generate("test", emotion, history=[])
+    finally:
+        llm_module.requests = old_requests
+
+    assert_true("mock without requests reply", bool(result.reply_text))
+    assert_true("mock without requests action", isinstance(result.action, dict))
+
+
+def test_parse_without_requests() -> None:
+    import srtp_voice.llm as llm_module
+
+    old_requests = llm_module.requests
+    llm_module.requests = None
+    try:
+        result = StrategyGenerator.parse_strategy_content('{"reply_text":"ok","action":{}}')
+    finally:
+        llm_module.requests = old_requests
+
+    assert_true("parse without requests", result.reply_text == "ok")
+
+
+def test_ollama_without_requests_error() -> None:
+    import srtp_voice.llm as llm_module
+
+    old_requests = llm_module.requests
+    llm_module.requests = None
+    try:
+        cfg = AppConfig(llm_backend="ollama", llm_fallback_to_mock=False)
+        emotion = EmotionResult(label="neutral", intensity=0.35, confidence=0.5, features={})
+        try:
+            StrategyGenerator(cfg).generate("test", emotion, history=[])
+        except RuntimeError as exc:
+            message = str(exc)
+            assert_true("missing requests names package", "requests package is required" in message)
+            assert_true("missing requests install command", "python -m pip install requests" in message)
+            return
+    finally:
+        llm_module.requests = old_requests
+
+    raise AssertionError("missing requests should raise")
+
+
+def test_ollama_without_requests_fallback() -> None:
+    import srtp_voice.llm as llm_module
+
+    old_requests = llm_module.requests
+    llm_module.requests = None
+    try:
+        cfg = AppConfig(llm_backend="ollama", llm_fallback_to_mock=True)
+        emotion = EmotionResult(label="neutral", intensity=0.35, confidence=0.5, features={})
+        result = StrategyGenerator(cfg).generate("test", emotion, history=[])
+    finally:
+        llm_module.requests = old_requests
+
+    assert_true("missing requests fallback reply", bool(result.reply_text))
 
 
 def test_default_model_name() -> None:
@@ -166,10 +292,8 @@ def test_ollama_native_payload() -> None:
             }
         })
 
-    old_get = llm_module.requests.get
-    old_post = llm_module.requests.post
-    llm_module.requests.get = fake_get
-    llm_module.requests.post = fake_post
+    old_requests = llm_module.requests
+    llm_module.requests = FakeRequests(fake_get, fake_post)
     try:
         cfg = AppConfig(
             llm_backend="ollama",
@@ -205,8 +329,7 @@ def test_ollama_native_payload() -> None:
         ]
         result = StrategyGenerator(cfg).generate("test", emotion, history=history)
     finally:
-        llm_module.requests.get = old_get
-        llm_module.requests.post = old_post
+        llm_module.requests = old_requests
 
     assert_true("ollama native url", captured["url"].endswith("/api/chat"))
     assert_true("ollama model", captured["json"]["model"] == "qwen3:4b-instruct")
@@ -260,10 +383,8 @@ def test_history_messages_preserve_codes() -> None:
             "message": {"content": '{"reply_text":"ok","action":{}}'},
         })
 
-    old_get = llm_module.requests.get
-    old_post = llm_module.requests.post
-    llm_module.requests.get = fake_get
-    llm_module.requests.post = fake_post
+    old_requests = llm_module.requests
+    llm_module.requests = FakeRequests(fake_get, fake_post)
     try:
         cfg = AppConfig(
             llm_backend="ollama",
@@ -289,8 +410,7 @@ def test_history_messages_preserve_codes() -> None:
         ]
         StrategyGenerator(cfg).generate("历史里的测试代号是什么？", emotion, history=history)
     finally:
-        llm_module.requests.get = old_get
-        llm_module.requests.post = old_post
+        llm_module.requests = old_requests
 
     messages = captured["json"]["messages"]
     prompt_text = json.dumps(messages, ensure_ascii=False)
@@ -358,10 +478,8 @@ def test_ollama_done_reason_length() -> None:
             "message": {"content": '{"reply_text":"truncated"'},
         })
 
-    old_get = llm_module.requests.get
-    old_post = llm_module.requests.post
-    llm_module.requests.get = fake_get
-    llm_module.requests.post = fake_post
+    old_requests = llm_module.requests
+    llm_module.requests = FakeRequests(fake_get, fake_post)
     try:
         cfg = AppConfig(llm_backend="ollama", llm_model="qwen3:4b-instruct")
         emotion = EmotionResult(label="neutral", intensity=0.35, confidence=0.5, features={})
@@ -372,14 +490,12 @@ def test_ollama_done_reason_length() -> None:
             assert_true("length error suggests max tokens", "LLM_MAX_TOKENS" in str(exc))
             return
     finally:
-        llm_module.requests.get = old_get
-        llm_module.requests.post = old_post
+        llm_module.requests = old_requests
 
     raise AssertionError("done_reason=length should raise")
 
 
 def test_ollama_http_error_includes_body() -> None:
-    import requests
     import srtp_voice.llm as llm_module
 
     class FakeResponse:
@@ -391,7 +507,7 @@ def test_ollama_http_error_includes_body() -> None:
 
         def raise_for_status(self):
             if self._raise_http:
-                raise requests.HTTPError(response=self)
+                raise FakeHTTPError(response=self)
             return None
 
         def json(self):
@@ -407,10 +523,8 @@ def test_ollama_http_error_includes_body() -> None:
             raise_http=True,
         )
 
-    old_get = llm_module.requests.get
-    old_post = llm_module.requests.post
-    llm_module.requests.get = fake_get
-    llm_module.requests.post = fake_post
+    old_requests = llm_module.requests
+    llm_module.requests = FakeRequests(fake_get, fake_post)
     try:
         cfg = AppConfig(llm_backend="ollama", llm_model="qwen3:4b-instruct")
         emotion = EmotionResult(label="neutral", intensity=0.35, confidence=0.5, features={})
@@ -423,14 +537,12 @@ def test_ollama_http_error_includes_body() -> None:
             assert_true("http error body clipped", len(message) < 650)
             return
     finally:
-        llm_module.requests.get = old_get
-        llm_module.requests.post = old_post
+        llm_module.requests = old_requests
 
     raise AssertionError("Ollama HTTP error should raise")
 
 
 def test_ollama_context_error_message() -> None:
-    import requests
     import srtp_voice.llm as llm_module
 
     class FakeResponse:
@@ -442,7 +554,7 @@ def test_ollama_context_error_message() -> None:
 
         def raise_for_status(self):
             if self._raise_http:
-                raise requests.HTTPError(response=self)
+                raise FakeHTTPError(response=self)
             return None
 
         def json(self):
@@ -458,10 +570,8 @@ def test_ollama_context_error_message() -> None:
             raise_http=True,
         )
 
-    old_get = llm_module.requests.get
-    old_post = llm_module.requests.post
-    llm_module.requests.get = fake_get
-    llm_module.requests.post = fake_post
+    old_requests = llm_module.requests
+    llm_module.requests = FakeRequests(fake_get, fake_post)
     try:
         cfg = AppConfig(
             llm_backend="ollama",
@@ -478,8 +588,7 @@ def test_ollama_context_error_message() -> None:
             assert_true("context advice", "LLM_CONTEXT_TOKENS" in message and "reduce history" in message)
             return
     finally:
-        llm_module.requests.get = old_get
-        llm_module.requests.post = old_post
+        llm_module.requests = old_requests
 
     raise AssertionError("context size error should raise")
 
@@ -512,10 +621,8 @@ def test_lmstudio_timeout_from_config() -> None:
             ]
         })
 
-    old_get = llm_module.requests.get
-    old_post = llm_module.requests.post
-    llm_module.requests.get = fake_get
-    llm_module.requests.post = fake_post
+    old_requests = llm_module.requests
+    llm_module.requests = FakeRequests(fake_get, fake_post)
     try:
         cfg = AppConfig(
             llm_backend="lmstudio",
@@ -527,8 +634,7 @@ def test_lmstudio_timeout_from_config() -> None:
         emotion = EmotionResult(label="neutral", intensity=0.35, confidence=0.5, features={})
         result = StrategyGenerator(cfg).generate("test", emotion, history=[])
     finally:
-        llm_module.requests.get = old_get
-        llm_module.requests.post = old_post
+        llm_module.requests = old_requests
 
     assert_true("lmstudio url", captured["url"].endswith("/v1/chat/completions"))
     assert_true("lmstudio timeout from config", captured["timeout"] == 321)
@@ -541,8 +647,14 @@ def main() -> None:
     test_missing_action()
     test_action_semantic_normalization()
     test_action_normal_response_unchanged()
+    test_invalid_nested_action_keeps_defaults()
+    test_partial_nested_action_merges_and_clamps()
     test_invalid_json()
     test_mock_backend()
+    test_mock_backend_without_requests()
+    test_parse_without_requests()
+    test_ollama_without_requests_error()
+    test_ollama_without_requests_fallback()
     test_default_model_name()
     test_ollama_native_payload()
     test_history_messages_preserve_codes()
