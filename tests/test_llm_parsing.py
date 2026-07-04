@@ -591,6 +591,112 @@ def test_env_bool_parsing() -> None:
     assert_true("env max history", cfg.max_history_turns == 4)
 
 
+def _config_from_url_env(overrides):
+    import srtp_voice.config as config_module
+
+    names = [
+        "LLM_OLLAMA_BASE_URL",
+        "LLM_OLLAMA_CHAT_URL",
+        "LLM_LMSTUDIO_BASE_URL",
+        "LLM_LMSTUDIO_CHAT_URL",
+    ]
+    saved = {name: os.environ.get(name) for name in names}
+    old_load_dotenv = config_module.load_dotenv
+    try:
+        config_module.load_dotenv = None
+        for name in names:
+            os.environ.pop(name, None)
+        for name, value in overrides.items():
+            os.environ[name] = value
+        return AppConfig.from_env()
+    finally:
+        config_module.load_dotenv = old_load_dotenv
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def test_llm_url_defaults_without_dotenv() -> None:
+    cfg = _config_from_url_env({})
+    assert_true("default ollama base url", cfg.llm_ollama_base_url == "http://localhost:11434")
+    assert_true("default ollama chat url", cfg.llm_ollama_chat_url == "http://localhost:11434/api/chat")
+    assert_true("default lmstudio base url", cfg.llm_lmstudio_base_url == "http://localhost:1234")
+    assert_true(
+        "default lmstudio chat url",
+        cfg.llm_lmstudio_chat_url == "http://localhost:1234/v1/chat/completions",
+    )
+
+
+def test_ollama_chat_url_derived_from_base_url() -> None:
+    cfg = _config_from_url_env({"LLM_OLLAMA_BASE_URL": "http://remote.example:11434"})
+    assert_true("ollama derived base", cfg.llm_ollama_base_url == "http://remote.example:11434")
+    assert_true("ollama derived chat", cfg.llm_ollama_chat_url == "http://remote.example:11434/api/chat")
+
+
+def test_ollama_chat_url_derived_without_double_slash() -> None:
+    cfg = _config_from_url_env({"LLM_OLLAMA_BASE_URL": "http://remote.example:11434/"})
+    assert_true("ollama derived no double slash", cfg.llm_ollama_chat_url == "http://remote.example:11434/api/chat")
+
+
+def test_ollama_chat_url_derived_with_path_prefix() -> None:
+    cfg = _config_from_url_env({"LLM_OLLAMA_BASE_URL": "http://proxy.example/ollama"})
+    assert_true("ollama derived path prefix", cfg.llm_ollama_chat_url == "http://proxy.example/ollama/api/chat")
+
+
+def test_explicit_ollama_chat_url_wins() -> None:
+    cfg = _config_from_url_env({
+        "LLM_OLLAMA_BASE_URL": "http://remote.example:11434",
+        "LLM_OLLAMA_CHAT_URL": "http://gateway.example/custom/chat",
+    })
+    assert_true("ollama explicit chat wins", cfg.llm_ollama_chat_url == "http://gateway.example/custom/chat")
+
+
+def test_blank_ollama_chat_url_falls_back_to_derived() -> None:
+    cfg = _config_from_url_env({
+        "LLM_OLLAMA_BASE_URL": "http://remote.example:11434",
+        "LLM_OLLAMA_CHAT_URL": "   ",
+    })
+    assert_true("ollama blank chat derives", cfg.llm_ollama_chat_url == "http://remote.example:11434/api/chat")
+
+
+def test_lmstudio_chat_url_derived_from_base_url() -> None:
+    cfg = _config_from_url_env({"LLM_LMSTUDIO_BASE_URL": "http://remote.example:1234"})
+    assert_true("lmstudio derived base", cfg.llm_lmstudio_base_url == "http://remote.example:1234")
+    assert_true(
+        "lmstudio derived chat",
+        cfg.llm_lmstudio_chat_url == "http://remote.example:1234/v1/chat/completions",
+    )
+
+
+def test_lmstudio_chat_url_derived_without_double_slash() -> None:
+    cfg = _config_from_url_env({"LLM_LMSTUDIO_BASE_URL": "http://remote.example:1234/"})
+    assert_true(
+        "lmstudio derived no double slash",
+        cfg.llm_lmstudio_chat_url == "http://remote.example:1234/v1/chat/completions",
+    )
+
+
+def test_explicit_lmstudio_chat_url_wins() -> None:
+    cfg = _config_from_url_env({
+        "LLM_LMSTUDIO_BASE_URL": "http://remote.example:1234",
+        "LLM_LMSTUDIO_CHAT_URL": "http://gateway.example/custom/v1/chat",
+    })
+    assert_true("lmstudio explicit chat wins", cfg.llm_lmstudio_chat_url == "http://gateway.example/custom/v1/chat")
+
+
+def test_blank_lmstudio_chat_url_falls_back_to_derived() -> None:
+    cfg = _config_from_url_env({
+        "LLM_LMSTUDIO_BASE_URL": "http://remote.example:1234",
+        "LLM_LMSTUDIO_CHAT_URL": "   ",
+    })
+    assert_true(
+        "lmstudio blank chat derives",
+        cfg.llm_lmstudio_chat_url == "http://remote.example:1234/v1/chat/completions",
+    )
+
+
 def test_ollama_done_reason_length() -> None:
     import srtp_voice.llm as llm_module
 
@@ -928,6 +1034,16 @@ def main() -> None:
     test_json_memory_negative_disables_load_and_append()
     test_json_memory_positive_limit_keeps_recent()
     test_env_bool_parsing()
+    test_llm_url_defaults_without_dotenv()
+    test_ollama_chat_url_derived_from_base_url()
+    test_ollama_chat_url_derived_without_double_slash()
+    test_ollama_chat_url_derived_with_path_prefix()
+    test_explicit_ollama_chat_url_wins()
+    test_blank_ollama_chat_url_falls_back_to_derived()
+    test_lmstudio_chat_url_derived_from_base_url()
+    test_lmstudio_chat_url_derived_without_double_slash()
+    test_explicit_lmstudio_chat_url_wins()
+    test_blank_lmstudio_chat_url_falls_back_to_derived()
     test_ollama_done_reason_length()
     test_ollama_http_error_includes_body()
     test_ollama_context_error_message()

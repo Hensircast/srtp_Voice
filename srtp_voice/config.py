@@ -17,6 +17,18 @@ def env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def env_text(name: str, default: str | None = None) -> str | None:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    stripped = value.strip()
+    return stripped if stripped else default
+
+
+def derive_url(base_url: str, endpoint: str) -> str:
+    return f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}"
+
+
 @dataclass
 class AppConfig:
     """全局配置。
@@ -75,6 +87,14 @@ class AppConfig:
             project_root = Path(__file__).resolve().parents[1]
             load_dotenv(project_root / ".env")
 
+        ollama_base_url = env_text("LLM_OLLAMA_BASE_URL", "http://localhost:11434")
+        ollama_chat_url = env_text("LLM_OLLAMA_CHAT_URL") or derive_url(ollama_base_url, "/api/chat")
+        lmstudio_base_url = env_text("LLM_LMSTUDIO_BASE_URL", "http://localhost:1234")
+        lmstudio_chat_url = env_text("LLM_LMSTUDIO_CHAT_URL") or derive_url(
+            lmstudio_base_url,
+            "/v1/chat/completions",
+        )
+
         return cls(
             sample_rate=int(os.getenv("SAMPLE_RATE", "16000")),
             output_dir=Path(os.getenv("OUTPUT_DIR", "outputs")),
@@ -90,10 +110,10 @@ class AppConfig:
             pre_roll_ms=int(os.getenv("PRE_ROLL_MS", "300")),
             llm_backend=os.getenv("LLM_BACKEND", "ollama"),
             llm_model=os.getenv("LLM_MODEL", "qwen3:4b-instruct"),
-            llm_ollama_base_url=os.getenv("LLM_OLLAMA_BASE_URL", "http://localhost:11434"),
-            llm_ollama_chat_url=os.getenv("LLM_OLLAMA_CHAT_URL", "http://localhost:11434/api/chat"),
-            llm_lmstudio_base_url=os.getenv("LLM_LMSTUDIO_BASE_URL", "http://localhost:1234"),
-            llm_lmstudio_chat_url=os.getenv("LLM_LMSTUDIO_CHAT_URL", "http://localhost:1234/v1/chat/completions"),
+            llm_ollama_base_url=ollama_base_url,
+            llm_ollama_chat_url=ollama_chat_url,
+            llm_lmstudio_base_url=lmstudio_base_url,
+            llm_lmstudio_chat_url=lmstudio_chat_url,
             llm_fallback_to_mock=env_bool("LLM_FALLBACK_TO_MOCK", False),
             llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0")),
             llm_max_tokens=int(os.getenv("LLM_MAX_TOKENS", "512")),

@@ -78,6 +78,8 @@ ollama pull qwen3:4b-instruct
 ```text
 LLM_BACKEND=ollama
 LLM_MODEL=qwen3:4b-instruct
+# LLM_OLLAMA_CHAT_URL can be omitted; it is derived from LLM_OLLAMA_BASE_URL.
+# Set CHAT_URL explicitly for proxies, gateways, or non-standard endpoints.
 LLM_OLLAMA_BASE_URL=http://localhost:11434
 LLM_OLLAMA_CHAT_URL=http://localhost:11434/api/chat
 LLM_FALLBACK_TO_MOCK=0
@@ -114,6 +116,8 @@ ollama pull <LLM_MODEL>
 ```text
 LLM_BACKEND=lmstudio
 LLM_MODEL=<LM Studio 中显示的模型 id>
+# LLM_LMSTUDIO_CHAT_URL can be omitted; it is derived from LLM_LMSTUDIO_BASE_URL.
+# Set CHAT_URL explicitly for proxies, gateways, or non-standard endpoints.
 LLM_LMSTUDIO_BASE_URL=http://localhost:1234
 LLM_LMSTUDIO_CHAT_URL=http://localhost:1234/v1/chat/completions
 ```
