@@ -739,7 +739,11 @@ def test_lmstudio_timeout_from_config() -> None:
     assert_true("lmstudio response parse", result.reply_text == "ok")
 
 
-def _generate_lmstudio_with_temperature(temperature: float, timeout_seconds: int):
+def _generate_lmstudio_with_temperature(
+    temperature: float,
+    timeout_seconds: int,
+    max_tokens: int = 512,
+):
     import srtp_voice.llm as llm_module
 
     class FakeResponse:
@@ -777,6 +781,7 @@ def _generate_lmstudio_with_temperature(temperature: float, timeout_seconds: int
             llm_lmstudio_base_url="http://localhost:1234",
             llm_lmstudio_chat_url="http://localhost:1234/v1/chat/completions",
             llm_temperature=temperature,
+            llm_max_tokens=max_tokens,
             llm_timeout_seconds=timeout_seconds,
         )
         emotion = EmotionResult(label="neutral", intensity=0.35, confidence=0.5, features={})
@@ -793,6 +798,22 @@ def test_lmstudio_temperature_from_config() -> None:
         assert_true(f"lmstudio temperature {temperature}", captured["json"]["temperature"] == temperature)
         assert_true(f"lmstudio timeout with temperature {temperature}", captured["timeout"] == 456)
         assert_true(f"lmstudio parsed with temperature {temperature}", result.reply_text == "ok")
+
+
+def test_lmstudio_max_tokens_from_config() -> None:
+    for max_tokens in [321, 777]:
+        result, captured = _generate_lmstudio_with_temperature(0.25, 456, max_tokens=max_tokens)
+        payload = captured["json"]
+        assert_true(f"lmstudio max tokens {max_tokens}", payload["max_tokens"] == max_tokens)
+        assert_true(f"lmstudio no num predict {max_tokens}", "num_predict" not in payload)
+        assert_true(f"lmstudio max tokens temperature {max_tokens}", payload["temperature"] == 0.25)
+        assert_true(f"lmstudio max tokens timeout {max_tokens}", captured["timeout"] == 456)
+        assert_true(f"lmstudio max tokens response format {max_tokens}", "response_format" in payload)
+        assert_true(
+            f"lmstudio max tokens response format type {max_tokens}",
+            payload["response_format"]["type"] == "json_schema",
+        )
+        assert_true(f"lmstudio max tokens parsed {max_tokens}", result.reply_text == "ok")
 
 
 def test_lmstudio_response_format_schema() -> None:
@@ -912,6 +933,7 @@ def main() -> None:
     test_ollama_context_error_message()
     test_lmstudio_timeout_from_config()
     test_lmstudio_temperature_from_config()
+    test_lmstudio_max_tokens_from_config()
     test_lmstudio_response_format_schema()
     test_mock_distress_expression_for_emotion_labels()
     test_mock_distress_expression_for_keywords()

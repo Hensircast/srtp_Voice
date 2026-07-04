@@ -222,6 +222,7 @@ class StrategyGenerator:
             "model": self.cfg.llm_model,
             "messages": self._build_messages(user_text, emotion, history),
             "temperature": self.cfg.llm_temperature,
+            "max_tokens": self.cfg.llm_max_tokens,
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {
