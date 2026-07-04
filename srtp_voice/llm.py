@@ -301,7 +301,8 @@ class StrategyGenerator:
         history: List[Dict[str, Any]],
     ) -> List[Dict[str, str]]:
         messages = [{"role": "system", "content": self._system_prompt()}]
-        for item in history[-self.cfg.max_history_turns:]:
+        selected_history = [] if self.cfg.max_history_turns <= 0 else history[-self.cfg.max_history_turns:]
+        for item in selected_history:
             if not isinstance(item, dict):
                 continue
             history_user = item.get("user_text")

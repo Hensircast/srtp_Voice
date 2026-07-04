@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -11,7 +12,8 @@ if str(ROOT) not in sys.path:
 
 from srtp_voice.config import AppConfig
 from srtp_voice.llm import LLMResponseError, StrategyGenerator
-from srtp_voice.types import EmotionResult
+from srtp_voice.memory import JsonMemory
+from srtp_voice.types import EmotionResult, PipelineState
 
 
 def assert_true(name: str, condition: bool) -> None:
@@ -42,6 +44,53 @@ class FakeRequests:
     def __init__(self, get_func, post_func):
         self.get = get_func
         self.post = post_func
+
+
+def _capture_ollama_messages(max_history_turns: int):
+    import srtp_voice.llm as llm_module
+
+    class FakeResponse:
+        def __init__(self, data):
+            self._data = data
+            self.status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._data
+
+    captured = {}
+
+    def fake_get(url, timeout):
+        return FakeResponse({"models": [{"name": "qwen3:4b-instruct"}]})
+
+    def fake_post(url, json, timeout):
+        captured["json"] = json
+        return FakeResponse({
+            "done_reason": "stop",
+            "message": {"content": '{"reply_text":"ok","action":{}}'},
+        })
+
+    history = [
+        {"user_text": "user 1", "reply_text": "assistant 1", "action": {"drop": True}},
+        {"user_text": "user 2", "reply_text": "assistant 2", "lip_sync": {"drop": True}},
+        {"user_text": "user 3", "reply_text": "assistant 3", "emotion_state": {"drop": True}},
+    ]
+    old_requests = llm_module.requests
+    llm_module.requests = FakeRequests(fake_get, fake_post)
+    try:
+        cfg = AppConfig(
+            llm_backend="ollama",
+            llm_model="qwen3:4b-instruct",
+            max_history_turns=max_history_turns,
+        )
+        emotion = EmotionResult(label="neutral", intensity=0.35, confidence=0.5, features={})
+        StrategyGenerator(cfg).generate("current question", emotion, history=history)
+    finally:
+        llm_module.requests = old_requests
+
+    return captured["json"]["messages"]
 
 
 def test_pure_json() -> None:
@@ -424,6 +473,93 @@ def test_history_messages_preserve_codes() -> None:
     assert_true("lip sync not in dialogue prompt", "lip_sync" not in dialogue_text)
 
 
+def test_history_limit_zero_disables_llm_history() -> None:
+    messages = _capture_ollama_messages(0)
+    assert_true("zero history message count", len(messages) == 2)
+    assert_true("zero history system first", messages[0]["role"] == "system")
+    assert_true("zero history current user last", messages[-1]["role"] == "user" and "current question" in messages[-1]["content"])
+    dialogue_text = json.dumps(messages[1:], ensure_ascii=False)
+    assert_true("zero history no old user", "user 1" not in dialogue_text and "user 3" not in dialogue_text)
+
+
+def test_history_limit_negative_disables_llm_history() -> None:
+    messages = _capture_ollama_messages(-1)
+    assert_true("negative history message count", len(messages) == 2)
+    assert_true("negative history current user last", messages[-1]["role"] == "user" and "current question" in messages[-1]["content"])
+    dialogue_text = json.dumps(messages[1:], ensure_ascii=False)
+    assert_true("negative history no old user", "user 1" not in dialogue_text and "user 3" not in dialogue_text)
+
+
+def test_history_limit_one_keeps_latest_turn() -> None:
+    messages = _capture_ollama_messages(1)
+    assert_true("one history message count", len(messages) == 4)
+    assert_true("one history latest user", messages[1]["role"] == "user" and messages[1]["content"] == "user 3")
+    assert_true("one history latest assistant", messages[2]["role"] == "assistant" and messages[2]["content"] == "assistant 3")
+    assert_true("one history current user last", messages[-1]["role"] == "user" and "current question" in messages[-1]["content"])
+    dialogue_text = json.dumps(messages[1:], ensure_ascii=False)
+    assert_true("one history excludes older", "user 1" not in dialogue_text and "user 2" not in dialogue_text)
+    assert_true("one history no action fields", "action" not in dialogue_text and "lip_sync" not in dialogue_text)
+
+
+def test_history_limit_two_keeps_latest_two_turns() -> None:
+    messages = _capture_ollama_messages(2)
+    roles = [message["role"] for message in messages]
+    assert_true("two history message count", len(messages) == 6)
+    assert_true("two history roles", roles == ["system", "user", "assistant", "user", "assistant", "user"])
+    assert_true("two history first selected", messages[1]["content"] == "user 2")
+    assert_true("two history second selected", messages[3]["content"] == "user 3")
+    assert_true("two history current user last", "current question" in messages[-1]["content"])
+    dialogue_text = json.dumps(messages[1:], ensure_ascii=False)
+    assert_true("two history excludes oldest", "user 1" not in dialogue_text)
+    assert_true("two history no pipeline fields", "action" not in dialogue_text and "lip_sync" not in dialogue_text and "emotion_state" not in dialogue_text)
+
+
+def _sample_pipeline_state(text: str) -> PipelineState:
+    return PipelineState(
+        user_audio="outputs/user_input.wav",
+        user_text=text,
+        emotion=EmotionResult(label="neutral", intensity=0.35, confidence=0.5, features={}),
+        reply_text=f"reply {text}",
+        action={},
+        reply_audio="outputs/reply.wav",
+    )
+
+
+def test_json_memory_zero_disables_load_and_append() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        path = Path(temp_dir) / "memory.json"
+        path.write_text(json.dumps([{"user_text": "old"}]), encoding="utf-8")
+        memory = JsonMemory(path, max_turns=0)
+        assert_true("memory zero load empty", memory.load() == [])
+        memory.append(_sample_pipeline_state("new"))
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        assert_true("memory zero append does not accumulate", saved == [{"user_text": "old"}])
+
+
+def test_json_memory_negative_disables_load_and_append() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        path = Path(temp_dir) / "memory.json"
+        path.write_text(json.dumps([{"user_text": "old"}]), encoding="utf-8")
+        memory = JsonMemory(path, max_turns=-1)
+        assert_true("memory negative load empty", memory.load() == [])
+        memory.append(_sample_pipeline_state("new"))
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        assert_true("memory negative append does not accumulate", saved == [{"user_text": "old"}])
+
+
+def test_json_memory_positive_limit_keeps_recent() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        path = Path(temp_dir) / "memory.json"
+        memory = JsonMemory(path, max_turns=2)
+        memory.append(_sample_pipeline_state("one"))
+        memory.append(_sample_pipeline_state("two"))
+        memory.append(_sample_pipeline_state("three"))
+        loaded = memory.load()
+        assert_true("memory positive length", len(loaded) == 2)
+        assert_true("memory positive first recent", loaded[0]["user_text"] == "two")
+        assert_true("memory positive second recent", loaded[1]["user_text"] == "three")
+
+
 def test_env_bool_parsing() -> None:
     saved = {name: os.environ.get(name) for name in [
         "LLM_TEMPERATURE",
@@ -722,6 +858,13 @@ def main() -> None:
     test_default_model_name()
     test_ollama_native_payload()
     test_history_messages_preserve_codes()
+    test_history_limit_zero_disables_llm_history()
+    test_history_limit_negative_disables_llm_history()
+    test_history_limit_one_keeps_latest_turn()
+    test_history_limit_two_keeps_latest_two_turns()
+    test_json_memory_zero_disables_load_and_append()
+    test_json_memory_negative_disables_load_and_append()
+    test_json_memory_positive_limit_keeps_recent()
     test_env_bool_parsing()
     test_ollama_done_reason_length()
     test_ollama_http_error_includes_body()

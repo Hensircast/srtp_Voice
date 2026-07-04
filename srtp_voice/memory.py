@@ -15,12 +15,16 @@ class JsonMemory:
         self.max_turns = max_turns
 
     def load(self) -> List[Dict[str, Any]]:
+        if self.max_turns <= 0:
+            return []
         data = load_json(self.path, default=[])
         if not isinstance(data, list):
             return []
         return data[-self.max_turns:]
 
     def append(self, state: PipelineState) -> None:
+        if self.max_turns <= 0:
+            return
         data = self.load()
         data.append(state.to_dict())
         save_json(self.path, data[-self.max_turns:])
