@@ -1,10 +1,14 @@
-# SRTP 表情机器人语音通路 V1.0
+# SRTP 表情机器人语音通路 V1.1
 
-V1.0 按完整语音通路拓展：
+V1.1 在 V1.0 完整语音通路基础上，接入本地 Ollama / LM Studio
+大模型运行时，并增加结构化回复与动作策略、上下文控制和短期记忆。
 
-**音频采集 / VAD → Idle-Listening-Thinking-Speaking 状态机 → SER → 情绪状态平滑 → ASR → LLM → TTS → 短时能量唇动同步 → 动作策略 JSON**
+**音频采集 / VAD → Idle-Listening-Thinking-Speaking 状态机
+→ SER → 情绪状态平滑 → ASR → 本地 LLM
+→ TTS → 短时能量唇动同步 → 动作策略 JSON**
 
-当前真实模型仍以注释占位，默认离线可跑。
+当前 LLM 已支持本地真实模型运行；ASR、SER 和 TTS 仍可按配置使用
+mock 或相应真实后端。
 
 ## 1. 最小运行
 
