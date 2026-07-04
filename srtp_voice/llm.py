@@ -51,6 +51,7 @@ OLLAMA_STRATEGY_SCHEMA: Dict[str, Any] = {
                         "volume": {"type": "number", "minimum": 0.5, "maximum": 1.0},
                     },
                     "required": ["speed", "pitch", "volume"],
+                    "additionalProperties": False,
                 },
                 "servo_targets_placeholder": {
                     "type": "object",
@@ -61,6 +62,7 @@ OLLAMA_STRATEGY_SCHEMA: Dict[str, Any] = {
                         "brow": {"type": "number", "minimum": 0.0, "maximum": 1.0},
                     },
                     "required": ["mouth_open", "left_eye", "right_eye", "brow"],
+                    "additionalProperties": False,
                 },
             },
             "required": [
@@ -71,9 +73,11 @@ OLLAMA_STRATEGY_SCHEMA: Dict[str, Any] = {
                 "tts_style",
                 "servo_targets_placeholder",
             ],
+            "additionalProperties": False,
         },
     },
     "required": ["reply_text", "action"],
+    "additionalProperties": False,
 }
 
 
@@ -218,6 +222,14 @@ class StrategyGenerator:
             "model": self.cfg.llm_model,
             "messages": self._build_messages(user_text, emotion, history),
             "temperature": self.cfg.llm_temperature,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "robot_interaction_strategy",
+                    "strict": True,
+                    "schema": OLLAMA_STRATEGY_SCHEMA,
+                },
+            },
         }
 
         try:

@@ -11,7 +11,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from srtp_voice.config import AppConfig
-from srtp_voice.llm import LLMResponseError, StrategyGenerator
+from srtp_voice.llm import LLMResponseError, OLLAMA_STRATEGY_SCHEMA, StrategyGenerator
 from srtp_voice.memory import JsonMemory
 from srtp_voice.types import EmotionResult, PipelineState
 
@@ -386,6 +386,8 @@ def test_ollama_native_payload() -> None:
     assert_true("ollama no think field", "think" not in captured["json"])
     assert_true("ollama stream bool", isinstance(captured["json"]["stream"], bool))
     assert_true("ollama format schema", isinstance(captured["json"]["format"], dict))
+    assert_true("ollama format reuses schema", captured["json"]["format"] == OLLAMA_STRATEGY_SCHEMA)
+    assert_true("ollama no response format", "response_format" not in captured["json"])
     assert_true("ollama schema requires reply", "reply_text" in captured["json"]["format"]["required"])
     action_schema = captured["json"]["format"]["properties"]["action"]["properties"]
     assert_true("schema mouth sync const", action_schema["mouth_sync"]["const"] == "short_time_energy")
@@ -793,6 +795,45 @@ def test_lmstudio_temperature_from_config() -> None:
         assert_true(f"lmstudio parsed with temperature {temperature}", result.reply_text == "ok")
 
 
+def test_lmstudio_response_format_schema() -> None:
+    result, captured = _generate_lmstudio_with_temperature(0.25, 456)
+    payload = captured["json"]
+    response_format = payload["response_format"]
+    json_schema = response_format["json_schema"]
+    schema = json_schema["schema"]
+    action_schema = schema["properties"]["action"]
+    action_properties = action_schema["properties"]
+
+    assert_true("lmstudio response format type", response_format["type"] == "json_schema")
+    assert_true("lmstudio schema name", isinstance(json_schema["name"], str) and bool(json_schema["name"]))
+    assert_true("lmstudio schema strict", json_schema["strict"] is True)
+    assert_true("lmstudio schema reused", schema == OLLAMA_STRATEGY_SCHEMA)
+    assert_true("lmstudio schema requires reply", "reply_text" in schema["required"])
+    assert_true("lmstudio schema requires action", "action" in schema["required"])
+    for field in [
+        "expression",
+        "gaze",
+        "blink",
+        "mouth_sync",
+        "tts_style",
+        "servo_targets_placeholder",
+    ]:
+        assert_true(f"lmstudio action schema has {field}", field in action_properties)
+    assert_true("lmstudio mouth sync const", action_properties["mouth_sync"]["const"] == "short_time_energy")
+    assert_true("lmstudio root closed", schema["additionalProperties"] is False)
+    assert_true("lmstudio action closed", action_schema["additionalProperties"] is False)
+    assert_true("lmstudio tts closed", action_properties["tts_style"]["additionalProperties"] is False)
+    assert_true(
+        "lmstudio servo closed",
+        action_properties["servo_targets_placeholder"]["additionalProperties"] is False,
+    )
+    assert_true("lmstudio schema temperature", payload["temperature"] == 0.25)
+    assert_true("lmstudio schema timeout", captured["timeout"] == 456)
+    assert_true("lmstudio messages system", payload["messages"][0]["role"] == "system")
+    assert_true("lmstudio messages current user last", payload["messages"][-1]["role"] == "user")
+    assert_true("lmstudio schema response parse", result.reply_text == "ok")
+
+
 def test_mock_distress_expression_for_emotion_labels() -> None:
     for label in ["angry_or_excited", "tired_or_sad"]:
         cfg = AppConfig(llm_backend="mock")
@@ -871,6 +912,7 @@ def main() -> None:
     test_ollama_context_error_message()
     test_lmstudio_timeout_from_config()
     test_lmstudio_temperature_from_config()
+    test_lmstudio_response_format_schema()
     test_mock_distress_expression_for_emotion_labels()
     test_mock_distress_expression_for_keywords()
     test_mock_normal_input_keeps_default_expression()
