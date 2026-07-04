@@ -594,6 +594,14 @@ def test_ollama_context_error_message() -> None:
 
 
 def test_lmstudio_timeout_from_config() -> None:
+    result, captured = _generate_lmstudio_with_temperature(0.4, 321)
+
+    assert_true("lmstudio url", captured["url"].endswith("/v1/chat/completions"))
+    assert_true("lmstudio timeout from config", captured["timeout"] == 321)
+    assert_true("lmstudio response parse", result.reply_text == "ok")
+
+
+def _generate_lmstudio_with_temperature(temperature: float, timeout_seconds: int):
     import srtp_voice.llm as llm_module
 
     class FakeResponse:
@@ -614,6 +622,7 @@ def test_lmstudio_timeout_from_config() -> None:
 
     def fake_post(url, json, timeout):
         captured["url"] = url
+        captured["json"] = json
         captured["timeout"] = timeout
         return FakeResponse({
             "choices": [
@@ -629,16 +638,71 @@ def test_lmstudio_timeout_from_config() -> None:
             llm_model="local-model",
             llm_lmstudio_base_url="http://localhost:1234",
             llm_lmstudio_chat_url="http://localhost:1234/v1/chat/completions",
-            llm_timeout_seconds=321,
+            llm_temperature=temperature,
+            llm_timeout_seconds=timeout_seconds,
         )
         emotion = EmotionResult(label="neutral", intensity=0.35, confidence=0.5, features={})
         result = StrategyGenerator(cfg).generate("test", emotion, history=[])
     finally:
         llm_module.requests = old_requests
 
-    assert_true("lmstudio url", captured["url"].endswith("/v1/chat/completions"))
-    assert_true("lmstudio timeout from config", captured["timeout"] == 321)
-    assert_true("lmstudio response parse", result.reply_text == "ok")
+    return result, captured
+
+
+def test_lmstudio_temperature_from_config() -> None:
+    for temperature in [0.0, 0.25]:
+        result, captured = _generate_lmstudio_with_temperature(temperature, 456)
+        assert_true(f"lmstudio temperature {temperature}", captured["json"]["temperature"] == temperature)
+        assert_true(f"lmstudio timeout with temperature {temperature}", captured["timeout"] == 456)
+        assert_true(f"lmstudio parsed with temperature {temperature}", result.reply_text == "ok")
+
+
+def test_mock_distress_expression_for_emotion_labels() -> None:
+    for label in ["angry_or_excited", "tired_or_sad"]:
+        cfg = AppConfig(llm_backend="mock")
+        emotion = EmotionResult(label=label, intensity=0.75, confidence=0.8, features={})
+        result = StrategyGenerator(cfg).generate("test", emotion, history=[])
+        assert_true(f"mock distress expression for {label}", result.action["expression"] == "concerned")
+
+
+def test_mock_distress_expression_for_keywords() -> None:
+    cfg = AppConfig(llm_backend="mock")
+    emotion = EmotionResult(label="neutral", intensity=0.35, confidence=0.5, features={})
+    for text in ["不会", "做不下去", "崩", "烦", "困难"]:
+        result = StrategyGenerator(cfg).generate(text, emotion, history=[])
+        assert_true(f"mock distress expression for {text}", result.action["expression"] == "concerned")
+
+
+def test_mock_normal_input_keeps_default_expression() -> None:
+    cfg = AppConfig(llm_backend="mock")
+    emotion = EmotionResult(label="neutral", intensity=0.35, confidence=0.5, features={})
+    result = StrategyGenerator(cfg).generate("test", emotion, history=[])
+    assert_true("mock normal expression default", result.action["expression"] == "neutral_smile")
+
+
+def test_lmstudio_fallback_to_mock_distress_expression() -> None:
+    import srtp_voice.llm as llm_module
+
+    def fake_get(url, timeout):
+        raise FakeRequestException("offline")
+
+    def fake_post(url, json, timeout):
+        raise AssertionError("LM Studio chat should not be called when model check fails")
+
+    old_requests = llm_module.requests
+    llm_module.requests = FakeRequests(fake_get, fake_post)
+    try:
+        cfg = AppConfig(
+            llm_backend="lmstudio",
+            llm_model="local-model",
+            llm_fallback_to_mock=True,
+        )
+        emotion = EmotionResult(label="neutral", intensity=0.35, confidence=0.5, features={})
+        result = StrategyGenerator(cfg).generate("不会", emotion, history=[])
+    finally:
+        llm_module.requests = old_requests
+
+    assert_true("lmstudio fallback mock distress expression", result.action["expression"] == "concerned")
 
 
 def main() -> None:
@@ -663,6 +727,11 @@ def main() -> None:
     test_ollama_http_error_includes_body()
     test_ollama_context_error_message()
     test_lmstudio_timeout_from_config()
+    test_lmstudio_temperature_from_config()
+    test_mock_distress_expression_for_emotion_labels()
+    test_mock_distress_expression_for_keywords()
+    test_mock_normal_input_keeps_default_expression()
+    test_lmstudio_fallback_to_mock_distress_expression()
 
 
 if __name__ == "__main__":

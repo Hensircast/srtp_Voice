@@ -130,7 +130,7 @@ class StrategyGenerator:
         ):
             reply = "先不要把问题扩大化。我们先保留语音输入、情绪识别、文本识别、回复生成和语音播放这条主链路。"
             action = self._normalize_action({
-                "expression": "concern_to_soft_smile",
+                "expression": "concerned",
                 "tts_style": {"speed": 0.92, "pitch": 0.0, "volume": 0.85},
             })
         else:
@@ -217,7 +217,7 @@ class StrategyGenerator:
         payload = {
             "model": self.cfg.llm_model,
             "messages": self._build_messages(user_text, emotion, history),
-            "temperature": 0.4,
+            "temperature": self.cfg.llm_temperature,
         }
 
         try:
