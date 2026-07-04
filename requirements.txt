@@ -5,12 +5,16 @@ soundfile>=0.12.1
 
 # LLM 使用 OpenAI-compatible API 时需要：
 requests>=2.31.0
+python-dotenv>=1.0.0
 
 # 串口输出到 Arduino/STM32/ESP32 时需要：
 pyserial>=3.5
 
 # 临时联网 TTS 演示：
 edge-tts>=6.1.10
+
+# 测试时需要安装
+pytest>=9
 
 # 真实模型接入时按需安装：
 # onnxruntime
