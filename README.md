@@ -120,6 +120,7 @@ LLM_MODEL=<LM Studio 中显示的模型 id>
 LLM_LMSTUDIO_BASE_URL=http://localhost:1234
 # Optional override. Leave unset to derive from LLM_LMSTUDIO_BASE_URL.
 # Uncomment only for proxies, gateways, or non-standard endpoints.
+# Custom chat endpoints do not need to expose /v1/models.
 # LLM_LMSTUDIO_CHAT_URL=http://localhost:1234/v1/chat/completions
 ```
 

@@ -219,9 +219,11 @@ class StrategyGenerator:
     ) -> StrategyResult:
         req = _require_requests()
         if runtime_name == "Ollama":
-            self._check_ollama()
+            if self._uses_standard_ollama_chat_url():
+                self._check_ollama()
         elif runtime_name == "LM Studio":
-            self._check_lmstudio()
+            if self._uses_standard_lmstudio_chat_url():
+                self._check_lmstudio()
 
         payload = {
             "model": self.cfg.llm_model,
@@ -256,6 +258,10 @@ class StrategyGenerator:
             raise LLMResponseError(f"{runtime_name} returned an invalid chat-completions response.") from exc
 
         return self.parse_strategy_content(content)
+
+    def _uses_standard_lmstudio_chat_url(self) -> bool:
+        derived_chat_url = self.cfg.llm_lmstudio_base_url.rstrip("/") + "/v1/chat/completions"
+        return self.cfg.llm_lmstudio_chat_url.rstrip("/") == derived_chat_url.rstrip("/")
 
     def _check_ollama(self) -> None:
         req = _require_requests()

@@ -1014,33 +1014,169 @@ def test_lmstudio_timeout_from_config() -> None:
     assert_true("lmstudio response parse", result.reply_text == "ok")
 
 
+def test_default_lmstudio_chat_url_runs_models_precheck() -> None:
+    result, captured = _generate_lmstudio_with_temperature(0.25, 456)
+    payload = captured["json"]
+    assert_true("default lmstudio get models", captured["get_urls"] == ["http://localhost:1234/v1/models"])
+    assert_true("default lmstudio post chat", captured["url"] == "http://localhost:1234/v1/chat/completions")
+    assert_true("default lmstudio temperature", payload["temperature"] == 0.25)
+    assert_true("default lmstudio max tokens", payload["max_tokens"] == 512)
+    assert_true("default lmstudio response format", payload["response_format"]["type"] == "json_schema")
+    assert_true("default lmstudio timeout", captured["timeout"] == 456)
+    assert_true("default lmstudio messages", payload["messages"][-1]["role"] == "user")
+    assert_true("default lmstudio parse", result.reply_text == "ok")
+
+
+def test_derived_remote_lmstudio_chat_url_runs_models_precheck() -> None:
+    result, captured = _generate_lmstudio_with_temperature(
+        0.25,
+        456,
+        base_url="http://remote.example:1234",
+        chat_url="http://remote.example:1234/v1/chat/completions",
+    )
+    assert_true("remote lmstudio get models", captured["get_urls"] == ["http://remote.example:1234/v1/models"])
+    assert_true("remote lmstudio post derived chat", captured["url"] == "http://remote.example:1234/v1/chat/completions")
+    assert_true("remote lmstudio parse", result.reply_text == "ok")
+
+
+def test_lmstudio_base_trailing_slash_standard_chat_runs_models_precheck() -> None:
+    result, captured = _generate_lmstudio_with_temperature(
+        0.25,
+        456,
+        base_url="http://remote.example:1234/",
+        chat_url="http://remote.example:1234/v1/chat/completions",
+    )
+    assert_true("lmstudio trailing slash get models", captured["get_urls"] == ["http://remote.example:1234/v1/models"])
+    assert_true("lmstudio trailing slash no double slash", "//v1/models" not in captured["get_urls"][0])
+    assert_true("lmstudio trailing slash parse", result.reply_text == "ok")
+
+
+def test_lmstudio_base_path_prefix_standard_chat_runs_models_precheck() -> None:
+    result, captured = _generate_lmstudio_with_temperature(
+        0.25,
+        456,
+        base_url="http://proxy.example/lmstudio",
+        chat_url="http://proxy.example/lmstudio/v1/chat/completions",
+    )
+    assert_true("lmstudio path prefix get models", captured["get_urls"] == ["http://proxy.example/lmstudio/v1/models"])
+    assert_true("lmstudio path prefix post chat", captured["url"] == "http://proxy.example/lmstudio/v1/chat/completions")
+    assert_true("lmstudio path prefix parse", result.reply_text == "ok")
+
+
+def test_custom_lmstudio_chat_url_skips_models_precheck() -> None:
+    result, captured = _generate_lmstudio_with_temperature(
+        0.25,
+        456,
+        chat_url="http://gateway.example/custom/lm-chat",
+        get_raises=True,
+    )
+    assert_true("custom lmstudio no models", captured["get_urls"] == [])
+    assert_true("custom lmstudio post custom chat", captured["url"] == "http://gateway.example/custom/lm-chat")
+    assert_true("custom lmstudio parse", result.reply_text == "ok")
+
+
+def test_different_host_lmstudio_chat_url_skips_models_precheck() -> None:
+    result, captured = _generate_lmstudio_with_temperature(
+        0.25,
+        456,
+        base_url="http://remote.example:1234",
+        chat_url="http://gateway.example/v1/chat/completions",
+        get_raises=True,
+    )
+    assert_true("different host lmstudio no models", captured["get_urls"] == [])
+    assert_true("different host lmstudio post chat", captured["url"] == "http://gateway.example/v1/chat/completions")
+    assert_true("different host lmstudio parse", result.reply_text == "ok")
+
+
+def test_lmstudio_trailing_slash_standard_chat_runs_models_precheck() -> None:
+    result, captured = _generate_lmstudio_with_temperature(
+        0.25,
+        456,
+        chat_url="http://localhost:1234/v1/chat/completions/",
+    )
+    assert_true("lmstudio trailing chat models", captured["get_urls"] == ["http://localhost:1234/v1/models"])
+    assert_true("lmstudio trailing chat post unchanged", captured["url"] == "http://localhost:1234/v1/chat/completions/")
+    assert_true("lmstudio trailing chat parse", result.reply_text == "ok")
+
+
+def test_standard_lmstudio_missing_model_still_raises() -> None:
+    try:
+        _generate_lmstudio_with_temperature(0.25, 456, model_ids=["other-model"])
+    except RuntimeError as exc:
+        assert_true("lmstudio missing model error", "is not loaded" in str(exc))
+        assert_true("lmstudio missing model hint", "LLM_MODEL" in str(exc))
+        return
+    raise AssertionError("standard LM Studio missing model should raise")
+
+
+def test_custom_lmstudio_chat_url_ignores_unavailable_models() -> None:
+    result, captured = _generate_lmstudio_with_temperature(
+        0.25,
+        456,
+        chat_url="http://gateway.example/custom/lm-chat",
+        get_raises=True,
+    )
+    assert_true("custom lmstudio ignores models", captured["get_urls"] == [])
+    assert_true("custom lmstudio unavailable models parse", result.reply_text == "ok")
+
+
+def test_custom_lmstudio_chat_http_error_still_reports() -> None:
+    try:
+        _generate_lmstudio_with_temperature(
+            0.25,
+            456,
+            chat_url="http://gateway.example/custom/lm-chat",
+            get_raises=True,
+            post_raises=True,
+        )
+    except RuntimeError as exc:
+        assert_true("custom lmstudio post http status", "HTTP 503" in str(exc))
+        return
+    raise AssertionError("custom LM Studio HTTP error should raise")
+
+
 def _generate_lmstudio_with_temperature(
     temperature: float,
     timeout_seconds: int,
     max_tokens: int = 512,
+    base_url: str = "http://localhost:1234",
+    chat_url: str = "http://localhost:1234/v1/chat/completions",
+    model_ids=None,
+    get_raises: bool = False,
+    post_raises: bool = False,
 ):
     import srtp_voice.llm as llm_module
 
     class FakeResponse:
-        def __init__(self, data):
-            self._data = data
-            self.status_code = 200
+        def __init__(self, data=None, text="", status_code=200, raise_http=False):
+            self._data = data if data is not None else {}
+            self.text = text
+            self.status_code = status_code
+            self._raise_http = raise_http
 
         def raise_for_status(self):
+            if self._raise_http:
+                raise FakeHTTPError(response=self)
             return None
 
         def json(self):
             return self._data
 
-    captured = {}
+    captured = {"get_urls": []}
 
     def fake_get(url, timeout):
-        return FakeResponse({"data": [{"id": "local-model"}]})
+        captured["get_urls"].append(url)
+        if get_raises:
+            raise FakeRequestException("models unavailable")
+        ids = model_ids if model_ids is not None else ["local-model"]
+        return FakeResponse({"data": [{"id": model_id} for model_id in ids]})
 
     def fake_post(url, json, timeout):
         captured["url"] = url
         captured["json"] = json
         captured["timeout"] = timeout
+        if post_raises:
+            return FakeResponse(text="custom lmstudio endpoint failed", status_code=503, raise_http=True)
         return FakeResponse({
             "choices": [
                 {"message": {"content": '{"reply_text":"ok","action":{}}'}}
@@ -1053,8 +1189,8 @@ def _generate_lmstudio_with_temperature(
         cfg = AppConfig(
             llm_backend="lmstudio",
             llm_model="local-model",
-            llm_lmstudio_base_url="http://localhost:1234",
-            llm_lmstudio_chat_url="http://localhost:1234/v1/chat/completions",
+            llm_lmstudio_base_url=base_url,
+            llm_lmstudio_chat_url=chat_url,
             llm_temperature=temperature,
             llm_max_tokens=max_tokens,
             llm_timeout_seconds=timeout_seconds,
@@ -1226,6 +1362,16 @@ def main() -> None:
     test_ollama_http_error_includes_body()
     test_ollama_context_error_message()
     test_lmstudio_timeout_from_config()
+    test_default_lmstudio_chat_url_runs_models_precheck()
+    test_derived_remote_lmstudio_chat_url_runs_models_precheck()
+    test_lmstudio_base_trailing_slash_standard_chat_runs_models_precheck()
+    test_lmstudio_base_path_prefix_standard_chat_runs_models_precheck()
+    test_custom_lmstudio_chat_url_skips_models_precheck()
+    test_different_host_lmstudio_chat_url_skips_models_precheck()
+    test_lmstudio_trailing_slash_standard_chat_runs_models_precheck()
+    test_standard_lmstudio_missing_model_still_raises()
+    test_custom_lmstudio_chat_url_ignores_unavailable_models()
+    test_custom_lmstudio_chat_http_error_still_reports()
     test_lmstudio_temperature_from_config()
     test_lmstudio_max_tokens_from_config()
     test_lmstudio_response_format_schema()
