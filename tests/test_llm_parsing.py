@@ -408,6 +408,175 @@ def test_ollama_native_payload() -> None:
     assert_true("ollama response parse", result.reply_text == "ok")
 
 
+def _generate_ollama_with_urls(
+    base_url: str,
+    chat_url: str,
+    tag_models=None,
+    get_raises=False,
+    post_raises=False,
+):
+    import srtp_voice.llm as llm_module
+
+    class FakeResponse:
+        def __init__(self, data=None, text="", status_code=200, raise_http=False):
+            self._data = data if data is not None else {}
+            self.text = text
+            self.status_code = status_code
+            self._raise_http = raise_http
+
+        def raise_for_status(self):
+            if self._raise_http:
+                raise FakeHTTPError(response=self)
+            return None
+
+        def json(self):
+            return self._data
+
+    captured = {"get_urls": []}
+
+    def fake_get(url, timeout):
+        captured["get_urls"].append(url)
+        if get_raises:
+            raise FakeRequestException("tags unavailable")
+        models = tag_models if tag_models is not None else [{"name": "qwen3:4b-instruct"}]
+        return FakeResponse({"models": models})
+
+    def fake_post(url, json, timeout):
+        captured["post_url"] = url
+        captured["payload"] = json
+        captured["timeout"] = timeout
+        if post_raises:
+            return FakeResponse(text="custom endpoint failed", status_code=502, raise_http=True)
+        return FakeResponse({
+            "done_reason": "stop",
+            "message": {"content": '{"reply_text":"ok","action":{}}'},
+        })
+
+    old_requests = llm_module.requests
+    llm_module.requests = FakeRequests(fake_get, fake_post)
+    try:
+        cfg = AppConfig(
+            llm_backend="ollama",
+            llm_model="qwen3:4b-instruct",
+            llm_ollama_base_url=base_url,
+            llm_ollama_chat_url=chat_url,
+            llm_fallback_to_mock=False,
+            llm_temperature=0.0,
+            llm_max_tokens=777,
+            llm_context_tokens=9000,
+            llm_timeout_seconds=123,
+        )
+        emotion = EmotionResult(label="neutral", intensity=0.35, confidence=0.5, features={})
+        result = StrategyGenerator(cfg).generate("test", emotion, history=[])
+    finally:
+        llm_module.requests = old_requests
+
+    return result, captured
+
+
+def test_standard_ollama_chat_url_runs_tags_precheck() -> None:
+    result, captured = _generate_ollama_with_urls(
+        "http://localhost:11434",
+        "http://localhost:11434/api/chat",
+    )
+    assert_true("standard ollama get tags", captured["get_urls"] == ["http://localhost:11434/api/tags"])
+    assert_true("standard ollama post chat", captured["post_url"] == "http://localhost:11434/api/chat")
+    assert_true("standard ollama parse", result.reply_text == "ok")
+
+
+def test_derived_remote_ollama_chat_url_runs_tags_precheck() -> None:
+    result, captured = _generate_ollama_with_urls(
+        "http://remote.example:11434",
+        "http://remote.example:11434/api/chat",
+    )
+    assert_true("remote ollama get tags", captured["get_urls"] == ["http://remote.example:11434/api/tags"])
+    assert_true("remote ollama post derived chat", captured["post_url"] == "http://remote.example:11434/api/chat")
+    assert_true("remote ollama parse", result.reply_text == "ok")
+
+
+def test_custom_ollama_chat_url_skips_tags_precheck() -> None:
+    result, captured = _generate_ollama_with_urls(
+        "http://localhost:11434",
+        "http://gateway.example/custom/chat",
+        get_raises=True,
+    )
+    assert_true("custom ollama no tags", captured["get_urls"] == [])
+    assert_true("custom ollama post custom chat", captured["post_url"] == "http://gateway.example/custom/chat")
+    assert_true("custom ollama parse", result.reply_text == "ok")
+
+
+def test_different_host_ollama_chat_url_skips_tags_precheck() -> None:
+    result, captured = _generate_ollama_with_urls(
+        "http://remote.example:11434",
+        "http://gateway.example/api/chat",
+        get_raises=True,
+    )
+    assert_true("different host no tags", captured["get_urls"] == [])
+    assert_true("different host post chat", captured["post_url"] == "http://gateway.example/api/chat")
+    assert_true("different host parse", result.reply_text == "ok")
+
+
+def test_custom_path_ollama_chat_url_skips_tags_precheck() -> None:
+    result, captured = _generate_ollama_with_urls(
+        "http://localhost:11434",
+        "http://gateway.example/v1/ollama-chat",
+        get_raises=True,
+    )
+    assert_true("custom path no tags", captured["get_urls"] == [])
+    assert_true("custom path preserved", captured["post_url"] == "http://gateway.example/v1/ollama-chat")
+    assert_true("custom path parse", result.reply_text == "ok")
+
+
+def test_trailing_slash_standard_ollama_chat_url_runs_tags_precheck() -> None:
+    result, captured = _generate_ollama_with_urls(
+        "http://localhost:11434",
+        "http://localhost:11434/api/chat/",
+    )
+    assert_true("trailing slash standard tags", captured["get_urls"] == ["http://localhost:11434/api/tags"])
+    assert_true("trailing slash post unchanged", captured["post_url"] == "http://localhost:11434/api/chat/")
+    assert_true("trailing slash parse", result.reply_text == "ok")
+
+
+def test_standard_ollama_missing_model_still_raises() -> None:
+    try:
+        _generate_ollama_with_urls(
+            "http://localhost:11434",
+            "http://localhost:11434/api/chat",
+            tag_models=[{"name": "other-model"}],
+        )
+    except RuntimeError as exc:
+        assert_true("standard missing model error", "is not installed" in str(exc))
+        assert_true("standard missing model pull hint", "ollama pull qwen3:4b-instruct" in str(exc))
+        return
+    raise AssertionError("standard Ollama missing model should raise")
+
+
+def test_custom_ollama_chat_url_ignores_unavailable_tags() -> None:
+    result, captured = _generate_ollama_with_urls(
+        "http://localhost:11434",
+        "http://gateway.example/custom/chat",
+        get_raises=True,
+    )
+    assert_true("custom ignores tags", captured["get_urls"] == [])
+    assert_true("custom unavailable tags parse", result.reply_text == "ok")
+
+
+def test_custom_ollama_chat_http_error_still_reports() -> None:
+    try:
+        _generate_ollama_with_urls(
+            "http://localhost:11434",
+            "http://gateway.example/custom/chat",
+            get_raises=True,
+            post_raises=True,
+        )
+    except RuntimeError as exc:
+        message = str(exc)
+        assert_true("custom post http status", "HTTP 502" in message)
+        assert_true("custom post http body", "custom endpoint failed" in message)
+        return
+    raise AssertionError("custom Ollama HTTP error should raise")
+
+
 def test_history_messages_preserve_codes() -> None:
     import srtp_voice.llm as llm_module
 
@@ -1025,6 +1194,15 @@ def main() -> None:
     test_ollama_without_requests_fallback()
     test_default_model_name()
     test_ollama_native_payload()
+    test_standard_ollama_chat_url_runs_tags_precheck()
+    test_derived_remote_ollama_chat_url_runs_tags_precheck()
+    test_custom_ollama_chat_url_skips_tags_precheck()
+    test_different_host_ollama_chat_url_skips_tags_precheck()
+    test_custom_path_ollama_chat_url_skips_tags_precheck()
+    test_trailing_slash_standard_ollama_chat_url_runs_tags_precheck()
+    test_standard_ollama_missing_model_still_raises()
+    test_custom_ollama_chat_url_ignores_unavailable_tags()
+    test_custom_ollama_chat_http_error_still_reports()
     test_history_messages_preserve_codes()
     test_history_limit_zero_disables_llm_history()
     test_history_limit_negative_disables_llm_history()

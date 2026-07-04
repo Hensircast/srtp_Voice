@@ -81,6 +81,7 @@ LLM_MODEL=qwen3:4b-instruct
 LLM_OLLAMA_BASE_URL=http://localhost:11434
 # Optional override. Leave unset to derive from LLM_OLLAMA_BASE_URL.
 # Uncomment only for proxies, gateways, or non-standard endpoints.
+# Custom chat endpoints do not need to expose /api/tags.
 # LLM_OLLAMA_CHAT_URL=http://localhost:11434/api/chat
 LLM_FALLBACK_TO_MOCK=0
 LLM_TEMPERATURE=0

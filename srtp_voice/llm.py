@@ -150,7 +150,8 @@ class StrategyGenerator:
         history: List[Dict[str, Any]],
     ) -> StrategyResult:
         req = _require_requests()
-        self._check_ollama()
+        if self._uses_standard_ollama_chat_url():
+            self._check_ollama()
 
         payload = {
             "model": self.cfg.llm_model,
@@ -203,6 +204,10 @@ class StrategyGenerator:
             raise LLMResponseError("Ollama returned an invalid /api/chat response.")
 
         return self.parse_strategy_content(content)
+
+    def _uses_standard_ollama_chat_url(self) -> bool:
+        derived_chat_url = self.cfg.llm_ollama_base_url.rstrip("/") + "/api/chat"
+        return self.cfg.llm_ollama_chat_url.rstrip("/") == derived_chat_url.rstrip("/")
 
     def _call_local_openai_compatible(
         self,
