@@ -100,12 +100,12 @@ def main() -> None:
     )
 
     print("[5/9] 语音转文本 ASR")
-    asr = ASRAdapter(cfg)
     if args.text:
         user_text = args.text.strip()
     elif args.mode == "console":
         user_text = input("请输入模拟 ASR 文本：").strip()
     else:
+        asr = ASRAdapter(cfg)
         user_text = asr.transcribe(user_audio).strip()
     if not user_text:
         if not args.text and args.mode in {"mic", "vad", "file"}:

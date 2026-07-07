@@ -15,6 +15,18 @@ class NoSpeechDetectedError(RuntimeError):
     pass
 
 
+def _validate_vad_timing(cfg: AppConfig) -> None:
+    available_listening_ms = cfg.max_record_seconds * 1000 - cfg.vad_calibration_ms
+    if available_listening_ms < cfg.min_speech_ms:
+        raise ValueError(
+            "Invalid VAD timing: available listening time after calibration is too short. "
+            f"MAX_RECORD_SECONDS={cfg.max_record_seconds}, "
+            f"VAD_CALIBRATION_MS={cfg.vad_calibration_ms}, "
+            f"MIN_SPEECH_MS={cfg.min_speech_ms}. "
+            "Increase MAX_RECORD_SECONDS, reduce VAD_CALIBRATION_MS, or reduce MIN_SPEECH_MS."
+        )
+
+
 def _rms_pcm16(frame: bytes) -> float:
     if not frame:
         return 0.0
@@ -71,6 +83,8 @@ def record_from_mic(path: Path, seconds: float, sample_rate: int = 16000) -> Non
 
 def record_until_silence(path: Path, cfg: AppConfig) -> None:
     """Record until EnergyVAD sees sustained speech and then sustained silence."""
+    _validate_vad_timing(cfg)
+
     try:
         import sounddevice as sd
     except ImportError as exc:

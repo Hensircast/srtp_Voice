@@ -10,6 +10,7 @@ from pathlib import Path
 
 from srtp_voice.audio_io import NoSpeechDetectedError, record_until_silence
 from srtp_voice.config import AppConfig
+from srtp_voice.types import EmotionResult, StrategyResult
 
 
 def _frame(amplitude: int, samples: int = 10) -> bytes:
@@ -72,6 +73,102 @@ def _vad_cfg(**overrides) -> AppConfig:
 def _wav_frame_count(path: Path) -> int:
     with wave.open(str(path), "rb") as wf:
         return wf.getnframes()
+
+
+def _install_failing_sounddevice(monkeypatch):
+    class FailingRawInputStream:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("RawInputStream should not be opened")
+
+    monkeypatch.setitem(sys.modules, "sounddevice", types.SimpleNamespace(RawInputStream=FailingRawInputStream))
+
+
+def _assert_invalid_vad_timing(monkeypatch, cfg: AppConfig, tmp_path: Path) -> None:
+    _install_failing_sounddevice(monkeypatch)
+    try:
+        record_until_silence(tmp_path / "input.wav", cfg)
+    except ValueError as exc:
+        message = str(exc)
+        assert "MAX_RECORD_SECONDS" in message
+        assert "VAD_CALIBRATION_MS" in message
+        assert "MIN_SPEECH_MS" in message
+        assert "Increase MAX_RECORD_SECONDS" in message
+        return
+    raise AssertionError("invalid VAD timing should raise before opening RawInputStream")
+
+
+def _patch_main_success(monkeypatch, tmp_path, args, cfg, asr_cls):
+    import main as main_module
+
+    calls = {"asr_init": 0, "asr_transcribe": 0}
+
+    class WrappedASR(asr_cls):
+        def __init__(self, cfg):
+            calls["asr_init"] += 1
+            super().__init__(cfg)
+
+        def transcribe(self, path):
+            calls["asr_transcribe"] += 1
+            return super().transcribe(path)
+
+    class FakeSER:
+        def predict(self, path):
+            return EmotionResult(label="neutral", intensity=0.35, confidence=0.5, features={})
+
+    class FakeSmoother:
+        def __init__(self, path, alpha):
+            pass
+
+        def update(self, emotion):
+            return type("Smoothed", (), {
+                "label": "neutral",
+                "valence": 0.0,
+                "arousal": 0.0,
+                "dominance": 0.0,
+                "to_dict": lambda self: {"label": "neutral"},
+            })()
+
+    class FakeMemory:
+        def __init__(self, path, max_turns):
+            pass
+
+        def load(self):
+            return []
+
+        def append(self, state):
+            return None
+
+    class FakeGenerator:
+        def __init__(self, cfg):
+            pass
+
+        def generate(self, user_text, emotion, history):
+            return StrategyResult(reply_text="ok", action={})
+
+    class FakeTTS:
+        def __init__(self, cfg):
+            pass
+
+        def synthesize(self, text, path):
+            Path(path).write_bytes(b"fake wav")
+
+    def fake_record(path, *args, **kwargs):
+        Path(path).write_bytes(b"fake wav")
+
+    monkeypatch.setattr(main_module, "parse_args", lambda: args)
+    monkeypatch.setattr(main_module.AppConfig, "from_env", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(main_module, "ASRAdapter", WrappedASR)
+    monkeypatch.setattr(main_module, "SpeechEmotionRecognizer", lambda: FakeSER())
+    monkeypatch.setattr(main_module, "EmotionStateSmoother", FakeSmoother)
+    monkeypatch.setattr(main_module, "JsonMemory", FakeMemory)
+    monkeypatch.setattr(main_module, "StrategyGenerator", FakeGenerator)
+    monkeypatch.setattr(main_module, "TTSAdapter", FakeTTS)
+    monkeypatch.setattr(main_module, "build_energy_lip_sync", lambda path: {"frames": []})
+    monkeypatch.setattr(main_module, "build_serial_packet", lambda action, lip_sync: {"ok": True})
+    monkeypatch.setattr(main_module, "save_serial_packet", lambda packet, path: None)
+    monkeypatch.setattr(main_module, "record_from_mic", fake_record)
+    monkeypatch.setattr(main_module, "record_until_silence", fake_record)
+    return main_module, calls
 
 
 def test_vad_calibration_dynamic_threshold_and_low_voice_trigger(monkeypatch, tmp_path, capsys) -> None:
@@ -171,6 +268,52 @@ def test_vad_no_speech_raises_and_does_not_create_dummy(monkeypatch, tmp_path) -
         assert not path.exists()
         return
     raise AssertionError("no speech should raise")
+
+
+def test_vad_invalid_when_max_shorter_than_calibration(monkeypatch, tmp_path) -> None:
+    cfg = _vad_cfg(max_record_seconds=0.05, vad_calibration_ms=80, min_speech_ms=30)
+    _assert_invalid_vad_timing(monkeypatch, cfg, tmp_path)
+
+
+def test_vad_invalid_when_max_equals_calibration(monkeypatch, tmp_path) -> None:
+    cfg = _vad_cfg(max_record_seconds=0.08, vad_calibration_ms=80, min_speech_ms=30)
+    _assert_invalid_vad_timing(monkeypatch, cfg, tmp_path)
+
+
+def test_vad_invalid_when_remaining_less_than_min_speech(monkeypatch, tmp_path) -> None:
+    cfg = _vad_cfg(max_record_seconds=0.10, vad_calibration_ms=80, min_speech_ms=30)
+    _assert_invalid_vad_timing(monkeypatch, cfg, tmp_path)
+
+
+def test_vad_valid_when_remaining_equals_min_speech(monkeypatch, tmp_path) -> None:
+    frames = [
+        _frame(20),
+        _frame(20),
+        _frame(260),
+        _frame(260),
+        _frame(260),
+    ]
+    _install_fake_sounddevice(monkeypatch, frames)
+    path = tmp_path / "input.wav"
+
+    record_until_silence(
+        path,
+        _vad_cfg(max_record_seconds=0.05, vad_calibration_ms=20, min_speech_ms=30),
+    )
+
+    assert path.exists()
+
+
+def test_vad_default_timing_is_valid(monkeypatch, tmp_path) -> None:
+    frames = [_frame(20, samples=512) for _ in range(25)]
+    frames.extend([_frame(260, samples=512) for _ in range(5)])
+    frames.extend([_frame(0, samples=512) for _ in range(32)])
+    _install_fake_sounddevice(monkeypatch, frames)
+    path = tmp_path / "input.wav"
+
+    record_until_silence(path, AppConfig())
+
+    assert path.exists()
 
 
 def test_vad_debug_default_and_env_parsing(monkeypatch) -> None:
@@ -332,3 +475,64 @@ def test_main_file_empty_asr_returns_idle_without_llm_tts(monkeypatch, tmp_path)
     state = json.loads((tmp_path / "last_state.json").read_text(encoding="utf-8"))
     assert state["stage"] == "Idle"
     assert calls == {"asr": 1, "llm": 0, "tts": 0}
+
+
+def test_main_console_does_not_create_asr_even_with_faster_whisper(monkeypatch, tmp_path) -> None:
+    cfg = AppConfig(output_dir=tmp_path, state_file=tmp_path / "emotion_state.json", asr_backend="faster_whisper")
+    args = argparse.Namespace(mode="console", audio="", text="", record_seconds=5.0, no_play=True)
+
+    class FailASR:
+        def __init__(self, cfg):
+            raise AssertionError("console mode should not create ASRAdapter")
+
+    main_module, calls = _patch_main_success(monkeypatch, tmp_path, args, cfg, FailASR)
+    monkeypatch.setattr("builtins.input", lambda prompt: "console text")
+
+    main_module.main()
+
+    assert calls == {"asr_init": 0, "asr_transcribe": 0}
+
+
+def test_main_text_override_does_not_create_asr_even_with_faster_whisper(monkeypatch, tmp_path) -> None:
+    audio_path = tmp_path / "input.wav"
+    audio_path.write_bytes(b"fake wav")
+    cfg = AppConfig(output_dir=tmp_path, state_file=tmp_path / "emotion_state.json", asr_backend="faster_whisper")
+    args = argparse.Namespace(mode="file", audio=str(audio_path), text="manual text", record_seconds=5.0, no_play=True)
+
+    class FailASR:
+        def __init__(self, cfg):
+            raise AssertionError("--text should not create ASRAdapter")
+
+    main_module, calls = _patch_main_success(monkeypatch, tmp_path, args, cfg, FailASR)
+
+    main_module.main()
+
+    assert calls == {"asr_init": 0, "asr_transcribe": 0}
+
+
+def test_main_file_mic_vad_create_asr_once_when_transcribing(monkeypatch, tmp_path) -> None:
+    class CountASR:
+        def __init__(self, cfg):
+            pass
+
+        def transcribe(self, path):
+            return "recognized text"
+
+    for mode in ["file", "mic", "vad"]:
+        mode_tmp = tmp_path / mode
+        mode_tmp.mkdir()
+        audio_path = mode_tmp / "input.wav"
+        audio_path.write_bytes(b"fake wav")
+        cfg = AppConfig(output_dir=mode_tmp, state_file=mode_tmp / "emotion_state.json")
+        args = argparse.Namespace(
+            mode=mode,
+            audio=str(audio_path) if mode == "file" else "",
+            text="",
+            record_seconds=5.0,
+            no_play=True,
+        )
+        main_module, calls = _patch_main_success(monkeypatch, mode_tmp, args, cfg, CountASR)
+
+        main_module.main()
+
+        assert calls == {"asr_init": 1, "asr_transcribe": 1}
