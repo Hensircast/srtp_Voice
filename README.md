@@ -149,3 +149,58 @@ LLM_FALLBACK_TO_MOCK=1
 ```powershell
 python tests\test_llm_parsing.py
 ```
+
+## 8. V1.2 faster-whisper 本地 ASR
+
+V1.2 第一阶段保留现有 EnergyVAD、SER、情绪平滑、LLM、TTS、动作策略和串口流程，只把 ASR 后端扩展为本地 `faster-whisper`。实时录音端点仍由 `srtp_voice/vad.py` 中的 EnergyVAD 负责；`faster-whisper` 的 `vad_filter` 只在录音完成后的转写阶段做静音过滤，不是流式 ASR。
+
+安装 ASR 额外依赖：
+
+```powershell
+python -m pip install -r requirements-asr.txt
+```
+
+配置 `.env`：
+
+```text
+ASR_BACKEND=faster_whisper
+ASR_MODEL=small
+ASR_DEVICE=cpu
+ASR_COMPUTE_TYPE=int8
+ASR_LANGUAGE=zh
+ASR_CPU_THREADS=4
+ASR_BEAM_SIZE=1
+ASR_VAD_FILTER=1
+ASR_MIN_SILENCE_MS=500
+ASR_CONDITION_ON_PREVIOUS_TEXT=0
+```
+
+第一次按模型名加载 `small` 时，`faster-whisper` 可能需要下载模型缓存；不要把模型权重提交到 Git 仓库。Windows CPU 默认使用 `int8`，更适合轻量调试。
+
+使用已有 WAV 文件：
+
+```powershell
+python main.py --mode file --audio recordings\test.wav --no-play
+```
+
+固定 5 秒麦克风录音后转写：
+
+```powershell
+python main.py --mode mic --record-seconds 5 --no-play
+```
+
+EnergyVAD 自动端点录音后转写：
+
+```powershell
+python main.py --mode vad --no-play
+```
+
+当前阶段不是流式 ASR；语音必须先保存为 WAV，再交给 `faster-whisper` 转写。
+
+EnergyVAD 启动后会先进行短暂环境噪声校准。`VAD_THRESHOLD` 是最低启动阈值；如果环境噪声较大，程序会按噪声 RMS 自动提高有效启动阈值，并使用较低的释放阈值判断说话后的静音结束。调试时可设置：
+
+```text
+VAD_DEBUG=1
+```
+
+没有检测到有效语音时，本轮会安全结束并回到 Idle，不再生成占位语音。

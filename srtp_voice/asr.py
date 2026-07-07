@@ -1,65 +1,106 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from .config import AppConfig
 
 
-class ASRAdapter:
-    """ASR 适配器。
+class ASRNoSpeechError(RuntimeError):
+    pass
 
-    V2 对齐学长方案：优先预留 SenseVoiceSmall ONNX INT8 接口；默认 mock 仍可跑。
+
+class ASRAdapter:
+    """ASR adapter.
+
+    The default mock backend stays lightweight. Real faster-whisper support is
+    imported lazily and loads the model once when the adapter is created.
     """
 
     def __init__(self, cfg: AppConfig):
         self.cfg = cfg
-        # 真实工程中建议在这里加载并预热模型，避免首次交互卡顿。
-        # 例如：self.session = onnxruntime.InferenceSession(...)
+        self.backend = cfg.asr_backend.lower()
+        self.model: Any | None = None
+        if self.backend == "faster_whisper":
+            self.model = self._load_faster_whisper_model()
 
     def transcribe(self, wav_path: Path) -> str:
-        if self.cfg.asr_backend == "mock":
-            print("      [ASR mock] 当前未接真实 ASR，返回固定占位文本。")
+        if self.backend == "mock":
+            print("      [ASR mock] current backend returns placeholder text.")
             return "这是语音识别占位结果"
 
-        if self.cfg.asr_backend == "sensevoice_onnx":
-            return self._sensevoice_onnx_placeholder(wav_path)
+        audio_path = Path(wav_path)
+        if not audio_path.is_file():
+            raise FileNotFoundError(f"ASR backend '{self.backend}' audio file not found: {audio_path}")
 
-        if self.cfg.asr_backend == "sensevoice":
-            return self._sensevoice_pytorch_placeholder(wav_path)
+        if self.backend == "faster_whisper":
+            return self._transcribe_faster_whisper(audio_path)
 
-        if self.cfg.asr_backend == "funasr":
-            return self._funasr_placeholder(wav_path)
+        if self.backend == "sensevoice_onnx":
+            return self._sensevoice_onnx_placeholder(audio_path)
 
-        if self.cfg.asr_backend == "whisper_cpp":
-            return self._whisper_cpp_placeholder(wav_path)
+        if self.backend == "sensevoice":
+            return self._sensevoice_pytorch_placeholder(audio_path)
 
-        raise ValueError(f"未知 ASR_BACKEND: {self.cfg.asr_backend}")
+        if self.backend == "funasr":
+            return self._funasr_placeholder(audio_path)
+
+        if self.backend == "whisper_cpp":
+            return self._whisper_cpp_placeholder(audio_path)
+
+        raise ValueError(f"Unknown ASR_BACKEND: {self.cfg.asr_backend}")
+
+    def _load_faster_whisper_model(self):
+        try:
+            from faster_whisper import WhisperModel
+        except ImportError as exc:
+            raise RuntimeError(
+                "faster-whisper 未安装，请运行：\n"
+                "python -m pip install faster-whisper"
+            ) from exc
+
+        try:
+            return WhisperModel(
+                self.cfg.asr_model,
+                device=self.cfg.asr_device,
+                compute_type=self.cfg.asr_compute_type,
+                cpu_threads=self.cfg.asr_cpu_threads,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "Failed to initialize ASR backend 'faster_whisper' "
+                f"with model '{self.cfg.asr_model}'."
+            ) from exc
+
+    def _transcribe_faster_whisper(self, wav_path: Path) -> str:
+        kwargs = {
+            "language": self.cfg.asr_language,
+            "task": "transcribe",
+            "beam_size": self.cfg.asr_beam_size,
+            "vad_filter": self.cfg.asr_vad_filter,
+            "condition_on_previous_text": self.cfg.asr_condition_on_previous_text,
+        }
+        if self.cfg.asr_vad_filter:
+            kwargs["vad_parameters"] = {
+                "min_silence_duration_ms": self.cfg.asr_min_silence_ms,
+            }
+
+        try:
+            segments, _info = self.model.transcribe(str(wav_path), **kwargs)
+            return "".join(segment.text for segment in segments).strip()
+        except Exception as exc:
+            raise RuntimeError(
+                f"ASR backend 'faster_whisper' failed for audio '{wav_path}'."
+            ) from exc
 
     def _sensevoice_onnx_placeholder(self, wav_path: Path) -> str:
-        # 学长定稿对应方案：SenseVoiceSmall INT8 ONNX + ONNX Runtime。
-        # 伪代码：
-        # import onnxruntime as ort
-        # session = ort.InferenceSession("models/sensevoice_small_int8.onnx", providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
-        # audio = load_16k_pcm(wav_path)
-        # inputs = preprocess_for_sensevoice(audio)
-        # outputs = session.run(None, inputs)
-        # return decode_sensevoice_text(outputs)
-        raise NotImplementedError("请在 srtp_voice/asr.py 中接入 SenseVoiceSmall INT8 ONNX")
+        raise NotImplementedError("Please implement SenseVoiceSmall INT8 ONNX in srtp_voice/asr.py")
 
     def _sensevoice_pytorch_placeholder(self, wav_path: Path) -> str:
-        # from funasr import AutoModel
-        # model = AutoModel(model="iic/SenseVoiceSmall", trust_remote_code=True)
-        # result = model.generate(input=str(wav_path), language="zh", use_itn=True)
-        # return parse_text_from_result(result)
-        raise NotImplementedError("请在 srtp_voice/asr.py 中接入 SenseVoiceSmall PyTorch/FunASR")
+        raise NotImplementedError("Please implement SenseVoiceSmall PyTorch/FunASR in srtp_voice/asr.py")
 
     def _funasr_placeholder(self, wav_path: Path) -> str:
-        # from funasr import AutoModel
-        # model = AutoModel(model="paraformer-zh", vad_model="fsmn-vad", punc_model="ct-punc")
-        # result = model.generate(input=str(wav_path))
-        # return result[0]["text"]
-        raise NotImplementedError("请在 srtp_voice/asr.py 中接入 FunASR Paraformer")
+        raise NotImplementedError("Please implement FunASR Paraformer in srtp_voice/asr.py")
 
     def _whisper_cpp_placeholder(self, wav_path: Path) -> str:
-        # whisper-cli -m models/ggml-tiny.bin -f outputs/user_input.wav -l zh
-        raise NotImplementedError("请在 srtp_voice/asr.py 中接入 whisper.cpp")
+        raise NotImplementedError("Please implement whisper.cpp in srtp_voice/asr.py")
