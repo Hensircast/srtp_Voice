@@ -3,7 +3,13 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from srtp_voice.audio_io import make_dummy_wav, play_wav, record_from_mic, record_until_silence
+from srtp_voice.audio_io import (
+    NoSpeechDetectedError,
+    make_dummy_wav,
+    play_wav,
+    record_from_mic,
+    record_until_silence,
+)
 from srtp_voice.asr import ASRAdapter
 from srtp_voice.config import AppConfig
 from srtp_voice.emotion_state import EmotionStateSmoother
@@ -42,13 +48,24 @@ def main() -> None:
 
     fsm = DialogueStateMachine()
 
+    print(f"[CONFIG] LLM={cfg.llm_backend}/{cfg.llm_model}, fallback={str(cfg.llm_fallback_to_mock).lower()}")
+    print(
+        "[CONFIG] "
+        f"VAD={cfg.vad_backend}, threshold={cfg.vad_threshold}, min_speech_ms={cfg.min_speech_ms}"
+    )
     print("[0/9] 初始化语音交互状态机：Idle / Listening / Thinking / Speaking")
     fsm.set(DialogueStage.IDLE)
 
     if args.mode == "vad":
         print(f"[1/9] VAD 自动端点录音 -> {user_audio}")
         fsm.set(DialogueStage.LISTENING)
-        record_until_silence(user_audio, cfg)
+        try:
+            record_until_silence(user_audio, cfg)
+        except NoSpeechDetectedError:
+            print("      未检测到有效语音，本轮结束")
+            fsm.set(DialogueStage.IDLE)
+            save_json(state_file, {"trace": fsm.trace, "stage": fsm.stage.value})
+            return
     elif args.mode == "mic":
         print(f"[1/9] 麦克风固定录音 {args.record_seconds:.1f}s -> {user_audio}")
         fsm.set(DialogueStage.LISTENING)
@@ -91,6 +108,12 @@ def main() -> None:
     else:
         user_text = asr.transcribe(user_audio).strip()
     if not user_text:
+        if not args.text and args.mode in {"mic", "vad", "file"}:
+            print("      ASR did not return speech text; skipping LLM/TTS for this turn.")
+            fsm.set(DialogueStage.IDLE)
+            save_json(state_file, {"trace": fsm.trace, "stage": fsm.stage.value})
+            print("完成：未识别到有效语音，状态机已回到 Idle")
+            return
         user_text = "我现在语音部分做不下去了。"
     print(f"      user_text={user_text}")
 

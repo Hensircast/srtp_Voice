@@ -25,3 +25,14 @@ def test_env_example_leaves_chat_urls_unset() -> None:
     assert not any(line.startswith("LLM_LMSTUDIO_CHAT_URL=") for line in active)
     assert any(line.startswith("# LLM_OLLAMA_CHAT_URL=") for line in lines)
     assert any(line.startswith("# LLM_LMSTUDIO_CHAT_URL=") for line in lines)
+
+
+def test_env_example_uses_qwen_instruct_model() -> None:
+    lines = [
+        line.strip()
+        for line in Path(".env.example").read_text(encoding="utf-8").splitlines()
+    ]
+    active = [line for line in lines if line and not line.startswith("#")]
+
+    assert "LLM_MODEL=qwen3:4b-instruct" in active
+    assert "LLM_MODEL=qwen3:4b" not in active

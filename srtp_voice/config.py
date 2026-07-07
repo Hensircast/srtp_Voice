@@ -49,12 +49,16 @@ class AppConfig:
 
     # VAD / 录音控制
     vad_backend: str = "energy"  # energy / silero
-    vad_threshold: float = 0.018
+    vad_threshold: float = 0.004
     frame_ms: int = 32
-    min_speech_ms: int = 400
-    silence_ms: int = 800
-    max_record_seconds: float = 8.0
-    pre_roll_ms: int = 300
+    min_speech_ms: int = 160
+    silence_ms: int = 1000
+    max_record_seconds: float = 15.0
+    pre_roll_ms: int = 400
+    vad_calibration_ms: int = 800
+    vad_noise_multiplier: float = 3.0
+    vad_release_ratio: float = 0.60
+    vad_debug: bool = False
 
     # LLM: V1.1 uses local runtimes only. Ollama is the default runtime.
     llm_backend: str = "ollama"  # mock / ollama / lmstudio
@@ -76,7 +80,16 @@ class AppConfig:
     tts_async: bool = False
 
     # ASR：默认需要手动输入识别文本，后续替换为 SenseVoice / FunASR / Whisper。
-    asr_backend: str = "mock"  # mock / sensevoice_onnx / sensevoice / funasr / whisper_cpp
+    asr_backend: str = "mock"  # mock / faster_whisper / sensevoice_onnx / sensevoice / funasr / whisper_cpp
+    asr_model: str = "small"
+    asr_device: str = "cpu"
+    asr_compute_type: str = "int8"
+    asr_language: str = "zh"
+    asr_cpu_threads: int = 4
+    asr_beam_size: int = 1
+    asr_vad_filter: bool = True
+    asr_min_silence_ms: int = 500
+    asr_condition_on_previous_text: bool = False
 
     # 情绪平滑：用简化 Kalman/EMA 占位，接口对齐学长方案。
     emotion_smooth_alpha: float = 0.35
@@ -102,12 +115,16 @@ class AppConfig:
             state_file=Path(os.getenv("STATE_FILE", "outputs/emotion_state.json")),
             max_history_turns=int(os.getenv("MAX_HISTORY_TURNS", "3")),
             vad_backend=os.getenv("VAD_BACKEND", "energy"),
-            vad_threshold=float(os.getenv("VAD_THRESHOLD", "0.018")),
+            vad_threshold=max(float(os.getenv("VAD_THRESHOLD", "0.004")), 1e-9),
             frame_ms=int(os.getenv("FRAME_MS", "32")),
-            min_speech_ms=int(os.getenv("MIN_SPEECH_MS", "400")),
-            silence_ms=int(os.getenv("SILENCE_MS", "800")),
-            max_record_seconds=float(os.getenv("MAX_RECORD_SECONDS", "8.0")),
-            pre_roll_ms=int(os.getenv("PRE_ROLL_MS", "300")),
+            min_speech_ms=max(1, int(os.getenv("MIN_SPEECH_MS", "160"))),
+            silence_ms=max(1, int(os.getenv("SILENCE_MS", "1000"))),
+            max_record_seconds=max(0.001, float(os.getenv("MAX_RECORD_SECONDS", "15"))),
+            pre_roll_ms=max(0, int(os.getenv("PRE_ROLL_MS", "400"))),
+            vad_calibration_ms=max(0, int(os.getenv("VAD_CALIBRATION_MS", "800"))),
+            vad_noise_multiplier=max(1.0, float(os.getenv("VAD_NOISE_MULTIPLIER", "3.0"))),
+            vad_release_ratio=min(1.0, max(1e-9, float(os.getenv("VAD_RELEASE_RATIO", "0.60")))),
+            vad_debug=env_bool("VAD_DEBUG", False),
             llm_backend=os.getenv("LLM_BACKEND", "ollama"),
             llm_model=os.getenv("LLM_MODEL", "qwen3:4b-instruct"),
             llm_ollama_base_url=ollama_base_url,
@@ -123,5 +140,14 @@ class AppConfig:
             tts_voice=os.getenv("TTS_VOICE", "zh-CN-XiaoxiaoNeural"),
             tts_async=env_bool("TTS_ASYNC", False),
             asr_backend=os.getenv("ASR_BACKEND", "mock"),
+            asr_model=env_text("ASR_MODEL", "small"),
+            asr_device=env_text("ASR_DEVICE", "cpu"),
+            asr_compute_type=env_text("ASR_COMPUTE_TYPE", "int8"),
+            asr_language=env_text("ASR_LANGUAGE", "zh"),
+            asr_cpu_threads=max(1, int(os.getenv("ASR_CPU_THREADS", "4"))),
+            asr_beam_size=max(1, int(os.getenv("ASR_BEAM_SIZE", "1"))),
+            asr_vad_filter=env_bool("ASR_VAD_FILTER", True),
+            asr_min_silence_ms=max(1, int(os.getenv("ASR_MIN_SILENCE_MS", "500"))),
+            asr_condition_on_previous_text=env_bool("ASR_CONDITION_ON_PREVIOUS_TEXT", False),
             emotion_smooth_alpha=float(os.getenv("EMOTION_SMOOTH_ALPHA", "0.35")),
         )
