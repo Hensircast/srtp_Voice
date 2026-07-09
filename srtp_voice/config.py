@@ -78,6 +78,13 @@ class AppConfig:
     tts_backend: str = "mock"  # mock / edge_tts / moss_tts_onnx / piper
     tts_voice: str = "zh-CN-XiaoxiaoNeural"
     tts_async: bool = False
+    tts_piper_exe: Path = Path("tools/piper/piper.exe")
+    tts_piper_model: Path = Path("models/piper/zh_CN-huayan-medium/model.onnx")
+    tts_piper_config: Path | None = None
+    tts_piper_timeout_seconds: int = 60
+    tts_piper_extra_args: str | None = None
+    tts_piper_espeak_data: Path | None = None
+    tts_piper_use_json_input: bool = False
 
     # ASR：默认需要手动输入识别文本，后续替换为 SenseVoice / FunASR / Whisper。
     asr_backend: str = "mock"  # mock / faster_whisper / sensevoice_onnx / sensevoice / funasr / whisper_cpp
@@ -139,6 +146,13 @@ class AppConfig:
             tts_backend=os.getenv("TTS_BACKEND", "mock"),
             tts_voice=os.getenv("TTS_VOICE", "zh-CN-XiaoxiaoNeural"),
             tts_async=env_bool("TTS_ASYNC", False),
+            tts_piper_exe=Path(env_text("TTS_PIPER_EXE", "tools/piper/piper.exe")),
+            tts_piper_model=Path(env_text("TTS_PIPER_MODEL", "models/piper/zh_CN-huayan-medium/model.onnx")),
+            tts_piper_config=Path(value) if (value := env_text("TTS_PIPER_CONFIG")) else None,
+            tts_piper_timeout_seconds=max(1, int(os.getenv("TTS_PIPER_TIMEOUT_SECONDS", "60"))),
+            tts_piper_extra_args=env_text("TTS_PIPER_EXTRA_ARGS"),
+            tts_piper_espeak_data=Path(value) if (value := env_text("TTS_PIPER_ESPEAK_DATA")) else None,
+            tts_piper_use_json_input=env_bool("TTS_PIPER_USE_JSON_INPUT", False),
             asr_backend=os.getenv("ASR_BACKEND", "mock"),
             asr_model=env_text("ASR_MODEL", "small"),
             asr_device=env_text("ASR_DEVICE", "cpu"),

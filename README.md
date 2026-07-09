@@ -1,3 +1,9 @@
+# SRTP 表情机器人语音交互项目
+
+这是一个 Windows + Python 的机器人头部语音回路工程。当前主线是回合式语音交互：录音/文件输入 -> ASR -> 本地 LLM -> TTS -> WAV 播放/唇动同步/动作策略 JSON。V1.3 增加本地 Piper 中文 TTS，并预留后续流式 ASR、LLM、TTS 的接口边界。
+
+## 当前主线
+
 # SRTP 表情机器人语音通路 V1
 
 V1.1 在 V1.0 完整语音通路基础上，接入本地 Ollama / LM Studio
@@ -204,3 +210,44 @@ VAD_DEBUG=1
 ```
 
 没有检测到有效语音时，本轮会安全结束并回到 Idle，不再生成占位语音。
+
+## 9. V1.3 Piper 本地中文 TTS
+
+V1.3 新增 `TTS_BACKEND=piper`，用于调用本地 `piper.exe` 和中文模型生成 `outputs/reply.wav`。Piper 是本地 TTS，不依赖网络；当前仍是回合式 TTS，不实现真正流式输入或流式输出。
+
+本地目录约定：
+
+```text
+tools/piper/
+models/piper/zh_CN-huayan-medium/
+outputs/
+```
+
+推荐先用 Python subprocess 做 smoke test。不要使用 PowerShell 管道，不要使用 `--input-file`：
+
+```powershell
+python -c "import subprocess; text='你好，请简短回答。'; subprocess.run(['tools/piper/piper.exe','--model','models/piper/zh_CN-huayan-medium/model.onnx','--output_file','outputs/piper-smoke.wav'], input=(text+'\n').encode('utf-8'), check=True)"
+```
+
+`.env` 示例：
+
+```text
+TTS_BACKEND=piper
+TTS_PIPER_EXE=tools/piper/piper.exe
+TTS_PIPER_MODEL=models/piper/zh_CN-huayan-medium/model.onnx
+TTS_PIPER_CONFIG=models/piper/zh_CN-huayan-medium/model.onnx.json
+TTS_PIPER_TIMEOUT_SECONDS=60
+TTS_PIPER_USE_JSON_INPUT=0
+# TTS_PIPER_ESPEAK_DATA=tools/piper/espeak-ng-data
+# TTS_PIPER_EXTRA_ARGS=
+```
+
+运行主流程：
+
+```powershell
+python .\main.py --mode console --text "你好，请简短回答。" --no-play
+```
+
+`--no-play` 只跳过播放，仍会生成 `outputs/reply.wav`，并继续生成唇动同步和动作策略 JSON。`tools/piper/`、`models/`、`outputs/`、音频文件都不应提交到 Git。
+
+V1.3 仅新增 `srtp_voice/streaming.py` 作为后续 V1.4/V1.5 的接口边界；真实流式 ASR、LLM、TTS 后续再接入。

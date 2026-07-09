@@ -28,6 +28,7 @@ recordings/*
 *.flac
 
 # Model files
+tools/piper/
 models/
 weights/
 *.onnx
