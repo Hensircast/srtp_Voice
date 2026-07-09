@@ -334,6 +334,13 @@ def test_env_example_and_gitignore_for_piper() -> None:
     assert "# TTS_BACKEND=piper" in env_text
     assert "TTS_PIPER_EXE=tools/piper/piper.exe" in env_text
     assert "TTS_PIPER_MODEL=models/piper/zh_CN-huayan-medium/your-model.onnx" in env_text
+    active_lines = [
+        line.strip()
+        for line in env_text.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    assert not any(line.startswith("TTS_PIPER_CONFIG=") for line in active_lines)
+    assert "# TTS_PIPER_CONFIG=models/piper/zh_CN-huayan-medium/your-model.onnx.json" in env_text
 
     gitignore = Path(".gitignore").read_text(encoding="utf-8")
     assert "tools/piper/" in gitignore
