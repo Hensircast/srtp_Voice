@@ -14,6 +14,16 @@ from .config import AppConfig
 
 
 class TTSAdapter:
+    _PIPER_FORBIDDEN_OUTPUT_ARGS = {
+        "--output_file",
+        "--output-file",
+        "-f",
+        "--output_dir",
+        "--output-dir",
+        "-d",
+        "--output_raw",
+    }
+
     def __init__(self, cfg: AppConfig):
         self.cfg = cfg
 
@@ -114,6 +124,13 @@ class TTSAdapter:
         if not model.is_file():
             raise FileNotFoundError(f"piper model not found: {model}")
 
+        out_wav.parent.mkdir(parents=True, exist_ok=True)
+        if out_wav.exists():
+            try:
+                out_wav.unlink()
+            except OSError as exc:
+                raise RuntimeError(f"piper TTS cannot remove stale output WAV before synthesis: {out_wav}") from exc
+
         cmd = [
             str(exe),
             "--model", str(model),
@@ -138,7 +155,14 @@ class TTSAdapter:
             stdin_data = (clean_text + "\n").encode("utf-8")
 
         if self.cfg.tts_piper_extra_args:
-            cmd.extend(shlex.split(self.cfg.tts_piper_extra_args))
+            extra_args = shlex.split(self.cfg.tts_piper_extra_args)
+            forbidden = [arg for arg in extra_args if arg in self._PIPER_FORBIDDEN_OUTPUT_ARGS]
+            if forbidden:
+                raise ValueError(
+                    "TTS_PIPER_EXTRA_ARGS must not contain Piper output path controls "
+                    f"{forbidden}; output path is managed by TTSAdapter."
+                )
+            cmd.extend(extra_args)
 
         try:
             result = subprocess.run(

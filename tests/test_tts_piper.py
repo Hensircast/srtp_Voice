@@ -14,8 +14,8 @@ from srtp_voice.tts import TTSAdapter
 def _piper_files(tmp_path):
     exe = tmp_path / "tools" / "piper" / "piper.exe"
     model = tmp_path / "models" / "piper" / "zh_CN-huayan-medium" / "model.onnx"
-    exe.parent.mkdir(parents=True)
-    model.parent.mkdir(parents=True)
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    model.parent.mkdir(parents=True, exist_ok=True)
     exe.write_bytes(b"exe")
     model.write_bytes(b"model")
     return exe, model
@@ -70,6 +70,25 @@ def test_piper_command_and_utf8_stdin(monkeypatch, tmp_path) -> None:
     assert "--input-file" not in cmd
     assert captured["input"] == "你好\n".encode("utf-8")
     assert captured["timeout"] == 12
+
+
+def test_piper_removes_stale_output_before_run(monkeypatch, tmp_path) -> None:
+    out_wav = tmp_path / "reply.wav"
+    out_wav.write_bytes(b"stale")
+    cfg = _cfg(tmp_path)
+    captured = {}
+
+    def fake_run(cmd, input, stdout, stderr, timeout):
+        captured["stale_exists_during_run"] = out_wav.exists()
+        out_wav.write_bytes(b"fresh")
+        return types.SimpleNamespace(returncode=0, stderr=b"")
+
+    monkeypatch.setattr(tts_module.subprocess, "run", fake_run)
+
+    TTSAdapter(cfg).synthesize("hello", out_wav)
+
+    assert captured["stale_exists_during_run"] is False
+    assert out_wav.read_bytes() == b"fresh"
 
 
 def test_piper_json_input(monkeypatch, tmp_path) -> None:
@@ -185,6 +204,7 @@ def test_piper_nonzero_timeout_and_bad_output(monkeypatch, tmp_path) -> None:
     else:
         raise AssertionError("timeout should raise")
 
+    out_wav.write_bytes(b"stale")
     _fake_run(monkeypatch, out_wav, write_output=False)
     try:
         TTSAdapter(cfg).synthesize("hello", out_wav)
@@ -200,6 +220,40 @@ def test_piper_nonzero_timeout_and_bad_output(monkeypatch, tmp_path) -> None:
         assert "non-empty WAV" in str(exc)
     else:
         raise AssertionError("empty output should raise")
+
+
+def test_piper_forbids_output_control_extra_args(tmp_path) -> None:
+    forbidden_args = [
+        "--output_file other.wav",
+        "--output-file other.wav",
+        "-f other.wav",
+        "--output_dir another",
+        "--output-dir another",
+        "-d another",
+        "--output_raw",
+    ]
+    for extra_args in forbidden_args:
+        cfg = _cfg(tmp_path, tts_piper_extra_args=extra_args)
+        try:
+            TTSAdapter(cfg).synthesize("hello", tmp_path / "reply.wav")
+        except ValueError as exc:
+            message = str(exc)
+            assert "TTS_PIPER_EXTRA_ARGS" in message
+            assert "output path is managed by TTSAdapter" in message
+        else:
+            raise AssertionError(f"forbidden extra args should raise: {extra_args}")
+
+
+def test_piper_allows_safe_extra_args(monkeypatch, tmp_path) -> None:
+    out_wav = tmp_path / "reply.wav"
+    cfg = _cfg(tmp_path, tts_piper_extra_args="--length_scale 1.1 --noise_scale 0.6 --noise_w 0.8 --sentence_silence 0.2")
+    captured = _fake_run(monkeypatch, out_wav)
+
+    TTSAdapter(cfg).synthesize("hello", out_wav)
+
+    cmd = captured["cmd"]
+    for item in ["--length_scale", "1.1", "--noise_scale", "0.6", "--noise_w", "0.8", "--sentence_silence", "0.2"]:
+        assert item in cmd
 
 
 def test_piper_empty_text_and_default_backend(tmp_path) -> None:
