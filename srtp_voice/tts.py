@@ -22,6 +22,7 @@ class TTSAdapter:
         "--output-dir",
         "-d",
         "--output_raw",
+        "--output-raw",
     }
 
     def __init__(self, cfg: AppConfig):

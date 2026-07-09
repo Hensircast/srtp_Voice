@@ -231,6 +231,7 @@ def test_piper_forbids_output_control_extra_args(tmp_path) -> None:
         "--output-dir another",
         "-d another",
         "--output_raw",
+        "--output-raw",
     ]
     for extra_args in forbidden_args:
         cfg = _cfg(tmp_path, tts_piper_extra_args=extra_args)
