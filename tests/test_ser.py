@@ -144,8 +144,8 @@ def test_sensevoice_is_lazy_and_loads_model_once(monkeypatch, tmp_path) -> None:
             calls["init"] += 1
             assert kwargs == {
                 "model": str(model_path),
-                "trust_remote_code": True,
                 "device": "cpu",
+                "disable_update": True,
             }
 
         def generate(self, **kwargs):
@@ -210,6 +210,72 @@ def test_sensevoice_common_output_shapes(monkeypatch, tmp_path, result, expected
     assert emotion.features == {}
 
 
+@pytest.mark.parametrize(
+    ("token", "expected"),
+    [
+        ("NEUTRAL", "neutral"),
+        ("HAPPY", "happy"),
+        ("FEARFUL", "fear"),
+        ("SURPRISED", "surprise"),
+    ],
+)
+def test_sensevoice_real_generate_text_format(monkeypatch, tmp_path, token, expected) -> None:
+    model_path = tmp_path / "SenseVoiceSmall"
+    model_path.mkdir()
+    wav_path = _write_wav(tmp_path / "input.wav", [1000] * 160)
+
+    class RealShapeModel:
+        def __init__(self, **kwargs):
+            assert kwargs["disable_update"] is True
+            assert "trust_remote_code" not in kwargs
+            assert "remote_code" not in kwargs
+
+        def generate(self, **kwargs):
+            return [
+                {
+                    "key": "v1_4_integration_verify",
+                    "text": (
+                        f"<|zh|><|{token}|><|Speech|><|withitn|>"
+                        "你好，这是语音交互系统综合测试。"
+                    ),
+                }
+            ]
+
+    _install_fake_funasr(monkeypatch, RealShapeModel)
+    result = SpeechEmotionRecognizer(_sensevoice_cfg(model_path)).predict(wav_path)
+
+    assert result.label == expected
+    assert 0.0 <= result.intensity <= 1.0
+    assert 0.0 <= result.confidence <= 1.0
+
+
+def test_sensevoice_ignores_non_emotion_tokens(monkeypatch, tmp_path) -> None:
+    model_path = tmp_path / "SenseVoiceSmall"
+    model_path.mkdir()
+    wav_path = _write_wav(tmp_path / "input.wav", [1000] * 160)
+
+    class NoEmotionModel:
+        def __init__(self, **kwargs):
+            pass
+
+        def generate(self, **kwargs):
+            return [
+                {
+                    "text": (
+                        "<|zh|><|en|><|Speech|><|withitn|><|woitn|>"
+                        "测试文本"
+                    )
+                }
+            ]
+
+    _install_fake_funasr(monkeypatch, NoEmotionModel)
+    result = SpeechEmotionRecognizer(_sensevoice_cfg(model_path)).predict(wav_path)
+
+    assert result.label == "unknown"
+    assert result.intensity == 0.5
+    assert result.confidence == 0.5
+
+
 def test_sensevoice_missing_dependency_is_clear(monkeypatch, tmp_path) -> None:
     model_path = tmp_path / "SenseVoiceSmall"
     model_path.mkdir()
@@ -268,7 +334,7 @@ def test_sensevoice_parse_failure_falls_back(monkeypatch, tmp_path) -> None:
             pass
 
         def generate(self, **kwargs):
-            return [{"text": "transcript without emotion tag"}]
+            return []
 
     _install_fake_funasr(monkeypatch, InvalidOutputModel)
     cfg = _sensevoice_cfg(model_path, ser_fallback_to_heuristic=True)
@@ -344,4 +410,4 @@ def test_requirements_ser_keeps_model_dependencies_optional() -> None:
         if line.strip() and not line.strip().startswith("#")
     ]
 
-    assert requirements == ["-r requirements.txt", "funasr"]
+    assert requirements == ["-r requirements.txt", "funasr", "torchaudio"]

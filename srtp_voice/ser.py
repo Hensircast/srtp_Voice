@@ -80,6 +80,15 @@ def normalize_emotion_label(value: object) -> str:
 
 
 def _extract_sensevoice_label(result: object) -> str:
+    def has_text(value: object) -> bool:
+        if isinstance(value, str):
+            return bool(value.strip())
+        if isinstance(value, dict):
+            return any(has_text(nested) for nested in value.values())
+        if isinstance(value, (list, tuple)):
+            return any(has_text(nested) for nested in value)
+        return False
+
     def find(value: object, allow_plain_string: bool = False) -> str | None:
         if isinstance(value, dict):
             for key in _EMOTION_KEYS:
@@ -113,6 +122,8 @@ def _extract_sensevoice_label(result: object) -> str:
 
     label = find(result, allow_plain_string=True)
     if label is None:
+        if has_text(result):
+            return "unknown"
         raise ValueError("SenseVoice output does not contain a supported emotion label")
     return label
 
@@ -211,8 +222,8 @@ class SenseVoiceSERBackend:
         try:
             self._model = AutoModel(
                 model=str(model_path),
-                trust_remote_code=True,
                 device=self.cfg.ser_device,
+                disable_update=True,
             )
         except Exception as exc:
             raise SERBackendError(
@@ -251,8 +262,8 @@ class SenseVoiceSERBackend:
                 exc,
             ) from exc
 
-        # SenseVoice rich-transcription output does not provide a consistently
-        # documented emotion probability, so confidence remains conservative.
+        # These are adapter defaults, not SenseVoice probabilities. They must not
+        # be used to evaluate model accuracy or calibration.
         return EmotionResult(
             label=label,
             intensity=0.50,

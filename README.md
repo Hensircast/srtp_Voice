@@ -285,6 +285,6 @@ SER_TIMEOUT_SECONDS=30
 python .\main.py --mode file --audio recordings\test.wav --text "SER smoke test" --no-play
 ```
 
-SenseVoice 输出中的中文、英文和 `<|HAPPY|>` 等 rich-transcription 标签会统一映射为 `neutral`、`happy`、`sad`、`angry`、`fear`、`surprise`、`disgust`、`tired`、`excited` 或 `unknown`。SenseVoice 常见输出没有稳定的情绪概率字段，因此当前 `intensity` 和 `confidence` 使用保守固定值 `0.50`，不会伪造高精度置信度。模型加载、推理或输出解析失败时，只有 `SER_FALLBACK_TO_HEURISTIC=1` 才会输出 warning 并回退到规则后端；设为 `0` 时直接抛出带失败阶段的错误。
+SenseVoice 输出中的中文、英文和 `<|HAPPY|>` 等 rich-transcription 标签会统一映射为 `neutral`、`happy`、`sad`、`angry`、`fear`、`surprise`、`disgust`、`tired`、`excited` 或 `unknown`；语言、事件和 ITN token 会被忽略，没有情绪 token 时安全返回 `unknown`。SenseVoice 标准 `generate` 输出没有校准后的情绪强度或置信度，因此当前 `intensity=0.50` 和 `confidence=0.50` 只是适配层保守默认值，不是 SenseVoice 原始概率，也不能用于模型精度或校准评估。模型加载、推理或输出解析失败时，只有 `SER_FALLBACK_TO_HEURISTIC=1` 才会输出 warning 并回退到规则后端；设为 `0` 时直接抛出带失败阶段的错误。
 
 V1.4 仍是完整 WAV 输入、完整结果输出的回合式处理，不是流式 SER。
