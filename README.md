@@ -1,6 +1,6 @@
 # SRTP 表情机器人语音交互项目
 
-这是一个 Windows + Python 的机器人头部语音回路工程。当前主线是回合式语音交互：录音/文件输入 -> ASR -> 本地 LLM -> TTS -> WAV 播放/唇动同步/动作策略 JSON。V1.3 增加本地 Piper 中文 TTS，并预留后续流式 ASR、LLM、TTS 的接口边界。
+这是一个 Windows + Python 的机器人头部语音回路工程。当前主线是回合式语音交互：录音/文件输入 -> SER/ASR -> 本地 LLM -> TTS -> WAV 播放/唇动同步/动作策略 JSON。V1.4 增加可配置 SER 后端，默认使用轻量 RMS/ZCR 规则，也可加载本地 SenseVoiceSmall 模型。
 
 ## 当前主线
 
@@ -250,4 +250,41 @@ python .\main.py --mode console --text "你好，请简短回答。" --no-play
 
 `--no-play` 只跳过播放，仍会生成 `outputs/reply.wav`，并继续生成唇动同步和动作策略 JSON。`tools/piper/`、`models/`、`outputs/`、音频文件都不应提交到 Git。
 
-V1.3 仅新增 `srtp_voice/streaming.py` 作为后续 V1.4/V1.5 的接口边界；真实流式 ASR、LLM、TTS 后续再接入。
+V1.3 仅新增 `srtp_voice/streaming.py` 作为后续版本的接口边界；真实流式 ASR、LLM、TTS 计划在 V1.7 再接入。
+
+## 10. V1.4 本地 SenseVoice SER
+
+V1.4 将语音情绪识别整理为统一的 `SpeechEmotionRecognizer(cfg)` 入口。默认 `heuristic` 后端只使用 WAV 的 RMS/ZCR，不加载模型；`sensevoice` 后端通过 FunASR 调用本地 SenseVoiceSmall。模型必须事先放在本机，代码不会自动下载，也不要将 `models/` 提交到 Git。
+
+安装独立 SER 依赖：
+
+```powershell
+python -m pip install -r requirements-ser.txt
+```
+
+推荐本地模型目录：
+
+```text
+models/ser/SenseVoiceSmall/
+```
+
+`.env` 示例：
+
+```text
+SER_BACKEND=sensevoice
+SER_MODEL=models/ser/SenseVoiceSmall
+SER_DEVICE=cpu
+SER_LANGUAGE=zh
+SER_FALLBACK_TO_HEURISTIC=1
+SER_TIMEOUT_SECONDS=30
+```
+
+真实模型 smoke test：
+
+```powershell
+python .\main.py --mode file --audio recordings\test.wav --text "SER smoke test" --no-play
+```
+
+SenseVoice 输出中的中文、英文和 `<|HAPPY|>` 等 rich-transcription 标签会统一映射为 `neutral`、`happy`、`sad`、`angry`、`fear`、`surprise`、`disgust`、`tired`、`excited` 或 `unknown`。SenseVoice 常见输出没有稳定的情绪概率字段，因此当前 `intensity` 和 `confidence` 使用保守固定值 `0.50`，不会伪造高精度置信度。模型加载、推理或输出解析失败时，只有 `SER_FALLBACK_TO_HEURISTIC=1` 才会输出 warning 并回退到规则后端；设为 `0` 时直接抛出带失败阶段的错误。
+
+V1.4 仍是完整 WAV 输入、完整结果输出的回合式处理，不是流式 SER。

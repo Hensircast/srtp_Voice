@@ -87,7 +87,7 @@ def main() -> None:
     fsm.set(DialogueStage.THINKING)
 
     print("[3/9] 语音情绪识别 SER")
-    ser = SpeechEmotionRecognizer()
+    ser = SpeechEmotionRecognizer(cfg)
     emotion = ser.predict(user_audio)
     print(f"      instant_emotion={emotion.label}, intensity={emotion.intensity:.2f}, confidence={emotion.confidence:.2f}")
 

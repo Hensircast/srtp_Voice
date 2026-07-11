@@ -98,6 +98,14 @@ class AppConfig:
     asr_min_silence_ms: int = 500
     asr_condition_on_previous_text: bool = False
 
+    # SER: lightweight heuristic by default; SenseVoice uses a local model only.
+    ser_backend: str = "heuristic"  # heuristic / sensevoice / custom
+    ser_model: str | None = None
+    ser_device: str = "cpu"
+    ser_language: str = "zh"
+    ser_fallback_to_heuristic: bool = True
+    ser_timeout_seconds: int = 30
+
     # 情绪平滑：用简化 Kalman/EMA 占位，接口对齐学长方案。
     emotion_smooth_alpha: float = 0.35
 
@@ -163,5 +171,11 @@ class AppConfig:
             asr_vad_filter=env_bool("ASR_VAD_FILTER", True),
             asr_min_silence_ms=max(1, int(os.getenv("ASR_MIN_SILENCE_MS", "500"))),
             asr_condition_on_previous_text=env_bool("ASR_CONDITION_ON_PREVIOUS_TEXT", False),
+            ser_backend=env_text("SER_BACKEND", "heuristic"),
+            ser_model=env_text("SER_MODEL"),
+            ser_device=env_text("SER_DEVICE", "cpu"),
+            ser_language=env_text("SER_LANGUAGE", "zh"),
+            ser_fallback_to_heuristic=env_bool("SER_FALLBACK_TO_HEURISTIC", True),
+            ser_timeout_seconds=max(1, int(os.getenv("SER_TIMEOUT_SECONDS", "30"))),
             emotion_smooth_alpha=float(os.getenv("EMOTION_SMOOTH_ALPHA", "0.35")),
         )
