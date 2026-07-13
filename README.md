@@ -1,172 +1,196 @@
 # SRTP 表情机器人语音交互项目
 
-这是一个 Windows + Python 的机器人头部语音回路工程。当前主线是回合式语音交互：录音/文件输入 -> ASR -> 本地 LLM -> TTS -> WAV 播放/唇动同步/动作策略 JSON。V1.3 增加本地 Piper 中文 TTS，并预留后续流式 ASR、LLM、TTS 的接口边界。
+这是一个运行于 Windows + Python 的机器人头部语音交互工程。项目当前采用回合式处理，可从麦克风、VAD 自动录音、已有 WAV 文件或终端文本获取输入，并生成回复音频、唇动参数和动作策略。
 
-## 当前主线
-
-# SRTP 表情机器人语音通路 V1
-
-V1.1 在 V1.0 完整语音通路基础上，接入本地 Ollama / LM Studio
-大模型运行时，并增加结构化回复与动作策略、上下文控制和短期记忆。
-
-**音频采集 / VAD → Idle-Listening-Thinking-Speaking 状态机
-→ SER → 情绪状态平滑 → ASR → 本地 LLM
-→ TTS → 短时能量唇动同步 → 动作策略 JSON**
-
-当前 LLM 已支持本地真实模型运行；ASR、SER 和 TTS 仍可按配置使用
-mock 或相应真实后端。
-
-## 1. 最小运行
-
-```powershell
-.\venv\Scripts\activate
-python main.py --mode console --text "测试 V1.0 主线" --no-play
-```
-
-## 2. 固定时长麦克风录音
-
-```powershell
-pip install -r requirements.txt
-python main.py --mode mic --record-seconds 5
-```
-
-## 3. VAD 自动端点录音
-
-```powershell
-python main.py --mode vad
-```
-
-默认用短时能量 EnergyVAD 占位。后续在 `srtp_voice/vad.py` 中替换为 Silero VAD 或 Silero VAD ONNX。
-
-## 4. 临时接入 edge-tts 真实语音
-
-```powershell
-$env:TTS_BACKEND="edge_tts"
-$env:TTS_VOICE="zh-CN-XiaoxiaoNeural"
-python main.py --mode console
-```
-
-edge-tts 会先生成临时 MP3，再通过 ffmpeg 转为 `outputs/reply.wav`。如未安装 ffmpeg，程序会给出明确错误；可用以下命令安装：
-
-```powershell
-winget install Gyan.FFmpeg
-```
-
-## 5. 对齐学长的模型替换点
-
-- VAD：`srtp_voice/vad.py` → Silero VAD / Silero VAD ONNX
-- ASR：`srtp_voice/asr.py` → SenseVoiceSmall INT8 ONNX
-- TTS：`srtp_voice/tts.py` → MOSS-TTS-Nano ONNX
-- 情绪平滑：`srtp_voice/emotion_state.py` → 对角卡尔曼滤波器
-- 唇动同步：`srtp_voice/lip_sync.py` → 目前已实现短时能量 mouth_open 序列
-
-## 6. 输出文件
-
-- `outputs/user_input.wav`：用户语音
-- `outputs/reply.wav`：回复语音
-- `outputs/last_action.json`：表情动作、情绪状态、唇动同步参数
-- `outputs/serial_packet.json`：唇动串口同步占位包
-- `outputs/emotion_state.json`：平滑后的连续情绪状态
-- `outputs/last_state.json`：对话状态机轨迹
-- `outputs/memory.json`：短期对话记忆
-
-## 7. V1.1 本地 LLM 运行时
-
-V1.1 默认使用 Ollama 作为本地 LLM 运行时，不连接 DeepSeek、OpenAI 等云端模型服务。模型权重应下载到本机，不要提交到 Git 仓库。
-
-### Ollama 默认方式
-
-安装并启动 Ollama 后，下载本地模型：
-
-```powershell
-ollama serve
-ollama pull qwen3:4b-instruct
-```
-
-配置 `.env`：
+## 1. 当前工作流
 
 ```text
-LLM_BACKEND=ollama
-LLM_MODEL=qwen3:4b-instruct
-LLM_OLLAMA_BASE_URL=http://localhost:11434
-# Optional override. Leave unset to derive from LLM_OLLAMA_BASE_URL.
-# Uncomment only for proxies, gateways, or non-standard endpoints.
-# Custom chat endpoints do not need to expose /api/tags.
-# LLM_OLLAMA_CHAT_URL=http://localhost:11434/api/chat
-LLM_FALLBACK_TO_MOCK=0
-LLM_TEMPERATURE=0
-LLM_MAX_TOKENS=512
-LLM_CONTEXT_TOKENS=8192
-LLM_TIMEOUT_SECONDS=180
+输入音频或文本
+→ Idle / Listening / Thinking / Speaking 状态机
+→ SER 语音情绪识别
+→ 情绪状态平滑
+→ ASR 语音转文本
+→ 短期记忆
+→ 本地 LLM 回复与动作策略
+→ TTS 合成 WAV
+→ 短时能量唇动同步
+→ 动作与串口占位 JSON
+→ 播放或跳过播放
+→ Idle
 ```
 
-Ollama 使用原生 `/api/chat`，请求中会设置 `stream=false`、完整 JSON Schema `format`、`temperature=0`、`num_predict=512` 和 `num_ctx=8192`，并且不会发送 `think` 字段，用于约束 qwen3 instruct 模型输出结构化 JSON。历史记录只会传入最近 `MAX_HISTORY_TURNS=3` 轮的 `user_text` 和 `reply_text`，不会把 action、唇动、串口包或状态机详情放进 LLM prompt。若 Ollama 返回 `done_reason=length`，表示模型输出被截断，程序会明确报错，不会尝试修补半截 JSON；可增大 `LLM_MAX_TOKENS` 后重试。若报错 `exceed_context_size_error`，请增大 `LLM_CONTEXT_TOKENS` 或减少历史。
+当前可配置的真实后端包括：
 
-运行：
+- ASR：本地 `faster-whisper`
+- SER：本地 SenseVoiceSmall + FunASR
+- LLM：本地 Ollama 或 LM Studio
+- TTS：本地 Piper，或联网演示用 `edge-tts`
+
+各模块保留 mock 或规则后端，便于离线调试。项目尚未实现流式 ASR、流式 TTS、独立服务或并行推理。
+
+## 2. 环境准备
+
+推荐环境：
+
+- Windows 10/11
+- PowerShell
+- Python venv
+- 16 kHz、单声道麦克风输入
+
+创建并激活虚拟环境：
 
 ```powershell
-python main.py --mode console --text "你好，请给一个简短回复" --no-play
+python -m venv venv
+.\venv\Scripts\Activate.ps1
 ```
 
-如果 Ollama 没有运行，程序会提示：
+## 3. 安装依赖
+
+基础依赖：
 
 ```powershell
-ollama serve
+python -m pip install -r requirements.txt
 ```
 
-如果模型没有下载，程序会提示：
-
-```powershell
-ollama pull <LLM_MODEL>
-```
-
-### LM Studio 兼容方式
-
-在 LM Studio 中下载模型，进入 Local Server，加载模型并启动服务。配置：
-
-```text
-LLM_BACKEND=lmstudio
-LLM_MODEL=<LM Studio 中显示的模型 id>
-LLM_LMSTUDIO_BASE_URL=http://localhost:1234
-# Optional override. Leave unset to derive from LLM_LMSTUDIO_BASE_URL.
-# Uncomment only for proxies, gateways, or non-standard endpoints.
-# Custom chat endpoints do not need to expose /v1/models.
-# LLM_LMSTUDIO_CHAT_URL=http://localhost:1234/v1/chat/completions
-```
-
-运行：
-
-```powershell
-python main.py --mode console --text "你好，请给一个简短回复" --no-play
-```
-
-### Mock 回退
-
-本地 LLM 调用失败时，默认直接报错。演示时可开启 mock 回退：
-
-```text
-LLM_FALLBACK_TO_MOCK=1
-```
-
-### LLM 解析测试
-
-不联网的结构化 JSON 解析测试：
-
-```powershell
-python tests\test_llm_parsing.py
-```
-
-## 8. V1.2 faster-whisper 本地 ASR
-
-V1.2 第一阶段保留现有 EnergyVAD、SER、情绪平滑、LLM、TTS、动作策略和串口流程，只把 ASR 后端扩展为本地 `faster-whisper`。实时录音端点仍由 `srtp_voice/vad.py` 中的 EnergyVAD 负责；`faster-whisper` 的 `vad_filter` 只在录音完成后的转写阶段做静音过滤，不是流式 ASR。
-
-安装 ASR 额外依赖：
+使用 `faster-whisper` ASR 时：
 
 ```powershell
 python -m pip install -r requirements-asr.txt
 ```
 
-配置 `.env`：
+使用 SenseVoice SER 时：
+
+```powershell
+python -m pip install -r requirements-ser.txt
+```
+
+Piper 使用本地 `piper.exe`，不需要安装 Piper Python 包。模型、Piper 工具和运行输出均不应提交到 Git。
+
+## 4. `.env` 配置
+
+程序启动时通过 `python-dotenv` 加载项目根目录的 `.env`：
+
+```powershell
+Copy-Item .env.example .env
+```
+
+当前 PowerShell 进程中已设置的环境变量优先于 `.env`。排查配置时，应同时检查两处。
+
+常用配置如下：
+
+| 环境变量 | 默认值 | 作用 |
+| --- | --- | --- |
+| `VAD_BACKEND` | `energy` | 录音端点检测后端 |
+| `VAD_THRESHOLD` | `0.004` | VAD 最低启动阈值 |
+| `VAD_DEBUG` | `0` | 输出 VAD RMS 和阈值诊断信息 |
+| `ASR_BACKEND` | `mock` | `mock` 或 `faster_whisper` |
+| `ASR_MODEL` | `small` | faster-whisper 模型名或路径 |
+| `SER_BACKEND` | `heuristic` | `heuristic`、`sensevoice` 或预留的 `custom` |
+| `SER_MODEL` | 未设置 | SenseVoice 本地模型路径；未设置时使用 `models/ser/SenseVoiceSmall` |
+| `SER_DEVICE` | `cpu` | SenseVoice 运行设备 |
+| `SER_FALLBACK_TO_HEURISTIC` | `1` | SenseVoice 失败时是否回退到规则 SER |
+| `LLM_BACKEND` | `ollama` | `mock`、`ollama` 或 `lmstudio` |
+| `LLM_MODEL` | `qwen3:4b-instruct` | 本地 LLM 模型名 |
+| `LLM_FALLBACK_TO_MOCK` | `0` | 本地 LLM 失败时是否回退到 mock |
+| `TTS_BACKEND` | `mock` | `mock`、`piper` 或 `edge_tts` |
+
+VAD 还支持环境噪声校准、动态启动阈值和释放阈值。常用补充项包括 `VAD_CALIBRATION_MS`、`VAD_NOISE_MULTIPLIER`、`VAD_RELEASE_RATIO`、`MIN_SPEECH_MS`、`SILENCE_MS` 和 `PRE_ROLL_MS`，具体默认值见 `.env.example`。
+
+## 5. 运行方式
+
+### 5.1 console 模式
+
+不使用麦克风，直接输入文本。`--text` 可避免交互式输入：
+
+```powershell
+python .\main.py --mode console --text "你好，请简短回答。" --no-play
+```
+
+console 模式会生成占位用户 WAV，以便继续执行 SER、LLM、TTS 和唇动流程。
+
+### 5.2 mic 模式
+
+按固定时长录音，默认 5 秒：
+
+```powershell
+python .\main.py --mode mic --record-seconds 5 --no-play
+```
+
+mic 模式支持 `--continuous`，每轮都会重新执行固定时长录音：
+
+```powershell
+python .\main.py --mode mic --record-seconds 5 --continuous --no-play
+```
+
+### 5.3 VAD 单轮模式
+
+EnergyVAD 会先进行环境噪声校准，然后自动判断说话开始和静音结束：
+
+```powershell
+python .\main.py --mode vad --no-play
+```
+
+单轮模式在完成一次处理或未检测到有效语音后退出。
+
+### 5.4 VAD continuous 模式
+
+推荐的常驻多轮命令：
+
+```powershell
+python .\main.py --mode vad --continuous --no-play
+```
+
+启用回复音频播放：
+
+```powershell
+python .\main.py --mode vad --continuous
+```
+
+continuous 模式只支持 `vad` 和 `mic`。`console` 或 `file` 配合 `--continuous` 会得到明确的参数错误。
+
+### 5.5 file 模式
+
+使用已有 WAV 文件测试 SER、ASR 和后续流程：
+
+```powershell
+python .\main.py --mode file --audio .\path\to\audio.wav --no-play
+```
+
+`file` 模式要求提供 `--audio`，并且文件必须存在。
+
+## 6. continuous 模式说明
+
+continuous 模式保持 `main.py` 在同一个 Python 进程中运行：
+
+```text
+程序启动
+→ 加载配置并创建 SER
+→ 预加载 SenseVoice SER 模型（启用 sensevoice 时）
+→ 初始化其余运行时对象
+→ VAD 或固定时长麦克风录音
+→ 完成 SER、情绪平滑、ASR、LLM、TTS、唇动和输出
+→ 状态机回到 Idle
+→ 自动开始下一轮监听
+→ Ctrl+C 正常退出
+```
+
+SenseVoice 模型只在启动时加载一次，后续各轮复用同一个 `SpeechEmotionRecognizer` 和已加载模型，从而避免每轮交互重复冷启动。第一次启动仍需导入 FunASR 并把模型权重加载到内存，continuous 模式不能消除这部分首次等待时间。
+
+ASR、LLM、TTS 适配器、情绪平滑器和短期记忆对象同样在循环外创建并复用。Piper 每轮仍通过本地可执行文件完成一次 WAV 合成；这不等同于流式 TTS。
+
+按 `Ctrl+C` 后，程序捕获中断，将状态机保存为 Idle，并正常退出，不输出冗长 traceback。
+
+continuous 模式不是独立服务，不使用 FastAPI、HTTP、额外后台进程、多线程或异步并行。
+
+### `--no-play`
+
+`--no-play` 只跳过 `outputs/reply.wav` 的播放。TTS 合成、唇动参数、动作策略、状态文件和短期记忆仍按当前工作流执行，适合调试和验证。
+
+## 7. 本地模型配置
+
+### 7.1 faster-whisper ASR
+
+CPU 调试配置：
 
 ```text
 ASR_BACKEND=faster_whisper
@@ -181,73 +205,191 @@ ASR_MIN_SILENCE_MS=500
 ASR_CONDITION_ON_PREVIOUS_TEXT=0
 ```
 
-第一次按模型名加载 `small` 时，`faster-whisper` 可能需要下载模型缓存；不要把模型权重提交到 Git 仓库。Windows CPU 默认使用 `int8`，更适合轻量调试。
+按模型名首次加载时，`faster-whisper` 可能下载模型缓存。其内置 VAD 只在录音完成后过滤静音；实时录音端点仍由 EnergyVAD 负责。当前 ASR 是完整 WAV 输入，不是流式 ASR。
 
-使用已有 WAV 文件：
+### 7.2 SenseVoice SER
 
-```powershell
-python main.py --mode file --audio recordings\test.wav --no-play
-```
-
-固定 5 秒麦克风录音后转写：
-
-```powershell
-python main.py --mode mic --record-seconds 5 --no-play
-```
-
-EnergyVAD 自动端点录音后转写：
-
-```powershell
-python main.py --mode vad --no-play
-```
-
-当前阶段不是流式 ASR；语音必须先保存为 WAV，再交给 `faster-whisper` 转写。
-
-EnergyVAD 启动后会先进行短暂环境噪声校准。`VAD_THRESHOLD` 是最低启动阈值；如果环境噪声较大，程序会按噪声 RMS 自动提高有效启动阈值，并使用较低的释放阈值判断说话后的静音结束。调试时可设置：
+推荐目录：
 
 ```text
-VAD_DEBUG=1
+models/ser/SenseVoiceSmall/
 ```
 
-没有检测到有效语音时，本轮会安全结束并回到 Idle，不再生成占位语音。
+配置示例：
 
-## 9. V1.3 Piper 本地中文 TTS
+```text
+SER_BACKEND=sensevoice
+SER_MODEL=models/ser/SenseVoiceSmall
+SER_DEVICE=cpu
+SER_LANGUAGE=zh
+SER_FALLBACK_TO_HEURISTIC=1
+```
 
-V1.3 新增 `TTS_BACKEND=piper`，用于调用本地 `piper.exe` 和中文模型生成 `outputs/reply.wav`。Piper 是本地 TTS，不依赖网络；当前仍是回合式 TTS，不实现真正流式输入或流式输出。
+SenseVoice 使用本地模型路径，并设置 `disable_update=True`，不会由项目代码自动下载或更新模型。启动时会打印：
 
-本地目录约定：
+```text
+[INIT] 正在预加载 SenseVoice SER 模型
+[INIT] SenseVoice SER 模型加载完成
+```
+
+适配层从 `<|NEUTRAL|>`、`<|HAPPY|>` 等 token 提取情绪，并统一为 `neutral`、`happy`、`sad`、`angry`、`fear`、`surprise`、`disgust`、`tired`、`excited` 或 `unknown`。语言、事件和 ITN token 不会被当作情绪；没有情绪 token 时返回 `unknown`。
+
+`intensity=0.50` 和 `confidence=0.50` 是当前适配层默认值，不是 SenseVoice 原始概率，也不应用于模型准确率评估。
+
+### 7.3 Ollama LLM
+
+启动 Ollama 并准备模型：
+
+```powershell
+ollama serve
+ollama pull qwen3:4b-instruct
+```
+
+配置示例：
+
+```text
+LLM_BACKEND=ollama
+LLM_MODEL=qwen3:4b-instruct
+LLM_OLLAMA_BASE_URL=http://localhost:11434
+LLM_FALLBACK_TO_MOCK=0
+LLM_TEMPERATURE=0
+LLM_MAX_TOKENS=512
+LLM_CONTEXT_TOKENS=8192
+LLM_TIMEOUT_SECONDS=180
+```
+
+Ollama 使用原生 `/api/chat`、非流式响应和 JSON Schema。未显式配置 `LLM_OLLAMA_CHAT_URL` 时，聊天地址从 Base URL 自动派生；自定义代理或网关可显式设置该变量。
+
+历史只传入最近 `MAX_HISTORY_TURNS` 轮的 `user_text` 和 `reply_text`。若返回 `done_reason=length`，可提高 `LLM_MAX_TOKENS`；若出现上下文超限，可提高 `LLM_CONTEXT_TOKENS` 或减少历史轮数。
+
+### 7.4 LM Studio LLM
+
+在 LM Studio 中加载模型并启动 Local Server，然后配置：
+
+```text
+LLM_BACKEND=lmstudio
+LLM_MODEL=<LM Studio 中显示的模型 id>
+LLM_LMSTUDIO_BASE_URL=http://localhost:1234
+```
+
+未显式配置 `LLM_LMSTUDIO_CHAT_URL` 时，聊天地址从 Base URL 自动派生。自定义 endpoint 不要求实现 `/v1/models` 预检接口。
+
+### 7.5 Piper TTS
+
+目录约定：
 
 ```text
 tools/piper/
 models/piper/zh_CN-huayan-medium/
-outputs/
 ```
 
-推荐先用 Python subprocess 做 smoke test。不要使用 PowerShell 管道，不要使用 `--input-file`：
-
-```powershell
-python -c "import subprocess; text='你好，请简短回答。'; subprocess.run(['tools/piper/piper.exe','--model','models/piper/zh_CN-huayan-medium/model.onnx','--output_file','outputs/piper-smoke.wav'], input=(text+'\n').encode('utf-8'), check=True)"
-```
-
-`.env` 示例：
+配置示例：
 
 ```text
 TTS_BACKEND=piper
 TTS_PIPER_EXE=tools/piper/piper.exe
 TTS_PIPER_MODEL=models/piper/zh_CN-huayan-medium/model.onnx
-TTS_PIPER_CONFIG=models/piper/zh_CN-huayan-medium/model.onnx.json
+# TTS_PIPER_CONFIG=models/piper/zh_CN-huayan-medium/model.onnx.json
 TTS_PIPER_TIMEOUT_SECONDS=60
 TTS_PIPER_USE_JSON_INPUT=0
-# TTS_PIPER_ESPEAK_DATA=tools/piper/espeak-ng-data
-# TTS_PIPER_EXTRA_ARGS=
 ```
 
-运行主流程：
+`TTS_PIPER_CONFIG` 可省略；默认会尝试 `<TTS_PIPER_MODEL>.json`。Piper 通过 Python subprocess 的 UTF-8 stdin 接收文本，不使用 PowerShell 管道，也不使用 `--input-file`。
+
+本地 smoke test：
 
 ```powershell
-python .\main.py --mode console --text "你好，请简短回答。" --no-play
+python -c "import subprocess; text='你好，请简短回答。'; subprocess.run(['tools/piper/piper.exe','--model','models/piper/zh_CN-huayan-medium/model.onnx','--output_file','outputs/piper-smoke.wav'], input=(text+'\n').encode('utf-8'), check=True)"
 ```
 
-`--no-play` 只跳过播放，仍会生成 `outputs/reply.wav`，并继续生成唇动同步和动作策略 JSON。`tools/piper/`、`models/`、`outputs/`、音频文件都不应提交到 Git。
+### 7.6 edge-tts
 
-V1.3 仅新增 `srtp_voice/streaming.py` 作为后续 V1.4/V1.5 的接口边界；真实流式 ASR、LLM、TTS 后续再接入。
+联网演示配置：
+
+```powershell
+$env:TTS_BACKEND="edge_tts"
+$env:TTS_VOICE="zh-CN-XiaoxiaoNeural"
+python .\main.py --mode console --text "你好" --no-play
+```
+
+`edge-tts` 先生成 MP3，再调用 FFmpeg 转为 `outputs/reply.wav`。未安装 FFmpeg 时程序会给出明确错误。
+
+## 8. 输出文件
+
+| 文件 | 内容 |
+| --- | --- |
+| `outputs/user_input.wav` | 当前轮用户录音或 console 占位音频 |
+| `outputs/reply.wav` | 当前轮 TTS 回复音频 |
+| `outputs/last_action.json` | 回复文本、表情动作、情绪状态和唇动参数 |
+| `outputs/serial_packet.json` | 下位机串口动作包占位输出 |
+| `outputs/emotion_state.json` | 平滑后的连续情绪状态 |
+| `outputs/last_state.json` | 状态机阶段和轨迹 |
+| `outputs/memory.json` | 最近若干轮短期记忆 |
+
+continuous 模式会覆盖当前轮音频和状态输出，不会为每轮自动创建新文件。
+
+## 9. 常见问题
+
+### VAD 无法检测到有效语音
+
+1. 确认项目根目录的 `.env` 已加载。
+2. 检查当前 PowerShell 环境变量是否覆盖 `.env`。
+3. 设置 `VAD_DEBUG=1`，观察 RMS、启动阈值和释放阈值。
+4. 检查 Windows 默认录音设备是否正确。
+5. VAD 启动后的校准阶段保持安静。
+
+环境噪声较大时，EnergyVAD 会自动提高有效启动阈值。continuous 模式下未检测到有效语音会结束当前轮并继续监听；单轮模式则回到 Idle 后退出。
+
+### SenseVoice 首次启动较慢
+
+主要耗时通常来自 FunASR 导入和模型权重加载。continuous 模式后续轮次复用已加载模型，避免重复冷启动。FunASR 日志中的 `rtf_avg` 主要反映推理速度，不包含全部初始化时间。
+
+### 日志出现 `trust_remote_code: False`
+
+这是 FunASR 日志，表示未启用远程自定义代码，不是运行错误。当前项目没有向 `AutoModel` 传入 `trust_remote_code=True` 或 `remote_code`。
+
+### 为什么情绪强度和置信度总是 `0.50`
+
+SenseVoice 标准输出没有提供可直接用于本项目的校准后情绪强度和置信度。当前两个值是适配层默认值，不代表模型概率。
+
+### Ollama 无法连接或模型不存在
+
+检查服务和模型：
+
+```powershell
+ollama serve
+ollama list
+```
+
+需要时下载配置中的模型：
+
+```powershell
+ollama pull qwen3:4b-instruct
+```
+
+## 10. 测试与验证
+
+运行全部离线测试：
+
+```powershell
+python -m pytest -q
+```
+
+基础验证：
+
+```powershell
+python -m compileall .\main.py .\srtp_voice
+git diff --check
+python -m pip check
+```
+
+测试使用 fake 后端和临时目录，不需要启动真实 Ollama、Piper、SenseVoice、faster-whisper 模型或麦克风。
+
+## 11. 当前限制
+
+- 当前仍是完整录音、完整识别、完整回复的回合式处理。
+- continuous 模式是同一进程内的同步循环，不是服务，也不表示可以无限期无故障运行。
+- 未实现流式 ASR、流式 LLM、流式 TTS、多线程并行或异步流水线。
+- SER 未转换为 ONNX；SenseVoice 当前通过 FunASR 本地运行。
+- 唇动同步基于短时能量，不是音素或 viseme 级口型同步。
+- 串口部分当前以动作包 JSON 为主，真实下位机联调仍需结合硬件配置。

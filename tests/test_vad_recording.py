@@ -158,7 +158,7 @@ def _patch_main_success(monkeypatch, tmp_path, args, cfg, asr_cls):
     monkeypatch.setattr(main_module, "parse_args", lambda: args)
     monkeypatch.setattr(main_module.AppConfig, "from_env", classmethod(lambda cls: cfg))
     monkeypatch.setattr(main_module, "ASRAdapter", WrappedASR)
-    monkeypatch.setattr(main_module, "SpeechEmotionRecognizer", lambda: FakeSER())
+    monkeypatch.setattr(main_module, "SpeechEmotionRecognizer", lambda cfg: FakeSER())
     monkeypatch.setattr(main_module, "EmotionStateSmoother", FakeSmoother)
     monkeypatch.setattr(main_module, "JsonMemory", FakeMemory)
     monkeypatch.setattr(main_module, "StrategyGenerator", FakeGenerator)
@@ -377,22 +377,32 @@ def test_main_vad_no_speech_returns_idle_without_asr_llm_tts(monkeypatch, tmp_pa
         record_seconds=5.0,
         no_play=True,
     )
+    inits = {"asr": 0, "llm": 0, "tts": 0}
     calls = {"asr": 0, "llm": 0, "tts": 0}
 
     class FailASR:
         def __init__(self, cfg):
+            inits["asr"] += 1
+
+        def transcribe(self, path):
             calls["asr"] += 1
-            raise AssertionError("ASR should not be called")
+            raise AssertionError("ASR transcribe should not be called")
 
     class FailLLM:
         def __init__(self, cfg):
+            inits["llm"] += 1
+
+        def generate(self, **kwargs):
             calls["llm"] += 1
-            raise AssertionError("LLM should not be called")
+            raise AssertionError("LLM generate should not be called")
 
     class FailTTS:
         def __init__(self, cfg):
+            inits["tts"] += 1
+
+        def synthesize(self, text, path):
             calls["tts"] += 1
-            raise AssertionError("TTS should not be called")
+            raise AssertionError("TTS synthesize should not be called")
 
     def raise_no_speech(path, cfg):
         raise NoSpeechDetectedError("no speech")
@@ -408,6 +418,7 @@ def test_main_vad_no_speech_returns_idle_without_asr_llm_tts(monkeypatch, tmp_pa
 
     state = json.loads((tmp_path / "last_state.json").read_text(encoding="utf-8"))
     assert state["stage"] == "Idle"
+    assert inits == {"asr": 1, "llm": 1, "tts": 1}
     assert calls == {"asr": 0, "llm": 0, "tts": 0}
 
 
@@ -425,6 +436,7 @@ def test_main_file_empty_asr_returns_idle_without_llm_tts(monkeypatch, tmp_path)
         record_seconds=5.0,
         no_play=True,
     )
+    inits = {"llm": 0, "tts": 0}
     calls = {"asr": 0, "llm": 0, "tts": 0}
 
     class FakeSER:
@@ -454,17 +466,23 @@ def test_main_file_empty_asr_returns_idle_without_llm_tts(monkeypatch, tmp_path)
 
     class FailLLM:
         def __init__(self, cfg):
+            inits["llm"] += 1
+
+        def generate(self, **kwargs):
             calls["llm"] += 1
-            raise AssertionError("LLM should not be called")
+            raise AssertionError("LLM generate should not be called")
 
     class FailTTS:
         def __init__(self, cfg):
+            inits["tts"] += 1
+
+        def synthesize(self, text, path):
             calls["tts"] += 1
-            raise AssertionError("TTS should not be called")
+            raise AssertionError("TTS synthesize should not be called")
 
     monkeypatch.setattr(main_module, "parse_args", lambda: args)
     monkeypatch.setattr(main_module.AppConfig, "from_env", classmethod(lambda cls: cfg))
-    monkeypatch.setattr(main_module, "SpeechEmotionRecognizer", lambda: FakeSER())
+    monkeypatch.setattr(main_module, "SpeechEmotionRecognizer", lambda cfg: FakeSER())
     monkeypatch.setattr(main_module, "EmotionStateSmoother", FakeSmoother)
     monkeypatch.setattr(main_module, "ASRAdapter", EmptyASR)
     monkeypatch.setattr(main_module, "StrategyGenerator", FailLLM)
@@ -474,6 +492,7 @@ def test_main_file_empty_asr_returns_idle_without_llm_tts(monkeypatch, tmp_path)
 
     state = json.loads((tmp_path / "last_state.json").read_text(encoding="utf-8"))
     assert state["stage"] == "Idle"
+    assert inits == {"llm": 1, "tts": 1}
     assert calls == {"asr": 1, "llm": 0, "tts": 0}
 
 

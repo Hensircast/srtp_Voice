@@ -1267,11 +1267,21 @@ def test_lmstudio_response_format_schema() -> None:
 
 
 def test_mock_distress_expression_for_emotion_labels() -> None:
-    for label in ["angry_or_excited", "tired_or_sad"]:
+    for label in [
+        "angry_or_excited",
+        "tired_or_sad",
+        "angry",
+        "excited",
+        "tired",
+        "sad",
+        "fear",
+        "disgust",
+    ]:
         cfg = AppConfig(llm_backend="mock")
         emotion = EmotionResult(label=label, intensity=0.75, confidence=0.8, features={})
         result = StrategyGenerator(cfg).generate("test", emotion, history=[])
         assert_true(f"mock distress expression for {label}", result.action["expression"] == "concerned")
+        assert_true(f"mock distress reply for {label}", result.reply_text.startswith("先不要把问题扩大化"))
 
 
 def test_mock_distress_expression_for_keywords() -> None:
