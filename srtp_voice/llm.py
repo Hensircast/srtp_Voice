@@ -129,7 +129,16 @@ class StrategyGenerator:
         raise ValueError("Unknown LLM_BACKEND. Use mock, ollama, or lmstudio.")
 
     def _mock_generate(self, user_text: str, emotion: EmotionResult, history: List[Dict[str, Any]]) -> StrategyResult:
-        if emotion.label in {"angry_or_excited", "tired_or_sad"} or any(
+        if emotion.label in {
+            "angry_or_excited",
+            "tired_or_sad",
+            "angry",
+            "excited",
+            "tired",
+            "sad",
+            "fear",
+            "disgust",
+        } or any(
             k in user_text for k in ["不会", "做不下去", "崩", "烦", "困难"]
         ):
             reply = "先不要把问题扩大化。我们先保留语音输入、情绪识别、文本识别、回复生成和语音播放这条主链路。"

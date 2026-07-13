@@ -55,7 +55,7 @@ def test_app_config_default_ser_values() -> None:
     assert cfg.ser_device == "cpu"
     assert cfg.ser_language == "zh"
     assert cfg.ser_fallback_to_heuristic is True
-    assert cfg.ser_timeout_seconds == 30
+    assert not hasattr(cfg, "ser_timeout_seconds")
 
 
 def test_app_config_parses_ser_environment(monkeypatch) -> None:
@@ -68,7 +68,6 @@ def test_app_config_parses_ser_environment(monkeypatch) -> None:
         "SER_DEVICE": "cuda:0",
         "SER_LANGUAGE": "en",
         "SER_FALLBACK_TO_HEURISTIC": "false",
-        "SER_TIMEOUT_SECONDS": "0",
     }
     for name, value in values.items():
         monkeypatch.setenv(name, value)
@@ -80,7 +79,18 @@ def test_app_config_parses_ser_environment(monkeypatch) -> None:
     assert cfg.ser_device == "cuda:0"
     assert cfg.ser_language == "en"
     assert cfg.ser_fallback_to_heuristic is False
-    assert cfg.ser_timeout_seconds == 1
+    assert not hasattr(cfg, "ser_timeout_seconds")
+
+
+def test_ser_timeout_environment_variable_is_not_supported(monkeypatch) -> None:
+    import srtp_voice.config as config_module
+
+    monkeypatch.setattr(config_module, "load_dotenv", None)
+    monkeypatch.setenv("SER_TIMEOUT_SECONDS", "not-an-integer")
+
+    cfg = AppConfig.from_env()
+
+    assert not hasattr(cfg, "ser_timeout_seconds")
 
 
 def test_heuristic_empty_and_normal_audio(tmp_path) -> None:
@@ -146,6 +156,7 @@ def test_sensevoice_is_lazy_and_loads_model_once(monkeypatch, tmp_path) -> None:
                 "model": str(model_path),
                 "device": "cpu",
                 "disable_update": True,
+                "disable_pbar": True,
             }
 
         def generate(self, **kwargs):
@@ -157,6 +168,8 @@ def test_sensevoice_is_lazy_and_loads_model_once(monkeypatch, tmp_path) -> None:
     recognizer = SpeechEmotionRecognizer(_sensevoice_cfg(model_path))
     assert calls == {"init": 0, "generate": 0}
 
+    recognizer.warmup()
+    recognizer.warmup()
     first = recognizer.predict(wav_path)
     second = recognizer.predict(wav_path)
 
@@ -167,10 +180,22 @@ def test_sensevoice_is_lazy_and_loads_model_once(monkeypatch, tmp_path) -> None:
 def test_default_heuristic_does_not_import_funasr(monkeypatch, tmp_path) -> None:
     monkeypatch.setitem(sys.modules, "funasr", None)
     wav_path = _write_wav(tmp_path / "input.wav", [2000] * 160)
+    recognizer = SpeechEmotionRecognizer(AppConfig(ser_backend="heuristic"))
 
-    result = SpeechEmotionRecognizer(AppConfig(ser_backend="heuristic")).predict(wav_path)
+    recognizer.warmup()
+    result = recognizer.predict(wav_path)
 
     assert result.label == "neutral"
+
+
+def test_sensevoice_backend_warmup_calls_load_model(monkeypatch) -> None:
+    backend = SenseVoiceSERBackend(AppConfig(ser_backend="sensevoice"))
+    calls = []
+    monkeypatch.setattr(backend, "_load_model", lambda: calls.append("load"))
+
+    backend.warmup()
+
+    assert calls == ["load"]
 
 
 def test_sensevoice_constructor_does_not_import_funasr(monkeypatch, tmp_path) -> None:
@@ -227,6 +252,7 @@ def test_sensevoice_real_generate_text_format(monkeypatch, tmp_path, token, expe
     class RealShapeModel:
         def __init__(self, **kwargs):
             assert kwargs["disable_update"] is True
+            assert kwargs["disable_pbar"] is True
             assert "trust_remote_code" not in kwargs
             assert "remote_code" not in kwargs
 
@@ -383,7 +409,64 @@ def test_result_bounds_and_label_are_normalized(tmp_path) -> None:
 def test_main_constructs_ser_with_config() -> None:
     import main
 
-    assert "SpeechEmotionRecognizer(cfg)" in inspect.getsource(main.main)
+    source = inspect.getsource(main.main)
+    assert source.count("SpeechEmotionRecognizer(cfg)") == 1
+
+
+def test_main_warms_and_reuses_one_sensevoice_recognizer(monkeypatch, tmp_path, capsys) -> None:
+    import argparse
+    import main as main_module
+
+    cfg = AppConfig(
+        output_dir=tmp_path,
+        memory_file=tmp_path / "memory.json",
+        state_file=tmp_path / "emotion.json",
+        ser_backend="sensevoice",
+        llm_backend="mock",
+        tts_backend="mock",
+    )
+    args = argparse.Namespace(
+        mode="mic",
+        audio="",
+        text="manual text",
+        record_seconds=0.1,
+        no_play=True,
+    )
+    events = []
+    instances = []
+
+    class FakeRecognizer:
+        def __init__(self, received_cfg):
+            assert received_cfg is cfg
+            instances.append(self)
+            events.append("init")
+
+        def warmup(self):
+            events.append("warmup")
+
+        def predict(self, wav_path):
+            assert instances == [self]
+            events.append("predict")
+            return EmotionResult(
+                label="neutral", intensity=0.5, confidence=0.5, features={}
+            )
+
+    def fake_record(path, **kwargs):
+        events.append("record")
+        Path(path).write_bytes(b"test audio placeholder")
+
+    monkeypatch.setattr(main_module, "parse_args", lambda: args)
+    monkeypatch.setattr(main_module.AppConfig, "from_env", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(main_module, "SpeechEmotionRecognizer", FakeRecognizer)
+    monkeypatch.setattr(main_module, "record_from_mic", fake_record)
+
+    main_module.main()
+
+    assert len(instances) == 1
+    assert events[:4] == ["init", "warmup", "record", "predict"]
+    output = capsys.readouterr().out
+    assert "[INIT] 正在预加载 SenseVoice SER 模型" in output
+    assert "[INIT] SenseVoice SER 模型加载完成" in output
 
 
 def test_env_example_contains_safe_ser_defaults() -> None:
@@ -400,6 +483,7 @@ def test_env_example_contains_safe_ser_defaults() -> None:
     assert "SER_BACKEND=heuristic" in active_lines
     assert "SER_FALLBACK_TO_HEURISTIC=1" in active_lines
     assert "SER_MODEL=models/ser/SenseVoiceSmall" not in active_lines
+    assert "SER_TIMEOUT_SECONDS" not in text
 
 
 def test_requirements_ser_keeps_model_dependencies_optional() -> None:

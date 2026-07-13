@@ -276,7 +276,6 @@ SER_MODEL=models/ser/SenseVoiceSmall
 SER_DEVICE=cpu
 SER_LANGUAGE=zh
 SER_FALLBACK_TO_HEURISTIC=1
-SER_TIMEOUT_SECONDS=30
 ```
 
 真实模型 smoke test：

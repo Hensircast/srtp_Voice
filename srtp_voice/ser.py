@@ -211,7 +211,7 @@ class SenseVoiceSERBackend:
             raise SERBackendError("model loading", str(error), error) from error
 
         try:
-            from funasr import AutoModel
+            from funasr import AutoModel    # pyright: ignore[reportMissingImports]
         except (ImportError, ModuleNotFoundError) as exc:
             raise SERBackendError(
                 "dependency import",
@@ -224,6 +224,7 @@ class SenseVoiceSERBackend:
                 model=str(model_path),
                 device=self.cfg.ser_device,
                 disable_update=True,
+                disable_pbar=True,
             )
         except Exception as exc:
             raise SERBackendError(
@@ -232,6 +233,9 @@ class SenseVoiceSERBackend:
                 exc,
             ) from exc
         return self._model
+
+    def warmup(self) -> None:
+        self._load_model()
 
     def predict(self, wav_path: Path) -> EmotionResult:
         path = Path(wav_path)
@@ -294,6 +298,11 @@ class SpeechEmotionRecognizer:
                 f"unsupported SER_BACKEND={cfg.ser_backend!r}; "
                 "expected heuristic, sensevoice, or custom"
             )
+
+    def warmup(self) -> None:
+        backend_warmup = getattr(self.backend, "warmup", None)
+        if callable(backend_warmup):
+            backend_warmup()
 
     def predict(self, wav_path: Path) -> EmotionResult:
         try:
