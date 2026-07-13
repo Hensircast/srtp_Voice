@@ -12,6 +12,7 @@ import pytest
 from srtp_voice.config import AppConfig
 from srtp_voice.ser import (
     HeuristicSERBackend,
+    SERBackendError,
     SER_LABELS,
     SenseVoiceSERBackend,
     SpeechEmotionRecognizer,
@@ -175,6 +176,69 @@ def test_sensevoice_is_lazy_and_loads_model_once(monkeypatch, tmp_path) -> None:
 
     assert first.label == second.label == "happy"
     assert calls == {"init": 1, "generate": 2}
+    assert recognizer.configured_backend_name == "sensevoice"
+    assert recognizer.backend_name == "sensevoice"
+
+
+def test_sensevoice_warmup_failure_switches_to_heuristic(monkeypatch, tmp_path) -> None:
+    wav_path = _write_wav(tmp_path / "input.wav", [2000] * 160)
+    recognizer = SpeechEmotionRecognizer(
+        AppConfig(ser_backend="sensevoice", ser_fallback_to_heuristic=True)
+    )
+    calls = {"warmup": 0, "predict": 0}
+
+    class FailingSenseVoiceBackend:
+        def warmup(self):
+            calls["warmup"] += 1
+            cause = OSError("model weights are unavailable")
+            raise SERBackendError("model loading", str(cause), cause) from cause
+
+        def predict(self, path):
+            calls["predict"] += 1
+            raise AssertionError("failed SenseVoice backend must not be retried")
+
+    recognizer.backend = FailingSenseVoiceBackend()
+
+    with pytest.warns(
+        RuntimeWarning,
+        match="model loading.*OSError.*falling back to heuristic.*model weights are unavailable",
+    ):
+        recognizer.warmup()
+
+    assert recognizer.configured_backend_name == "sensevoice"
+    assert recognizer.backend_name == "heuristic"
+    assert recognizer.backend is recognizer._fallback
+
+    result = recognizer.predict(wav_path)
+    recognizer.warmup()
+
+    assert result.label == "neutral"
+    assert calls == {"warmup": 1, "predict": 0}
+
+
+def test_sensevoice_warmup_failure_without_fallback_raises_runtime_error() -> None:
+    recognizer = SpeechEmotionRecognizer(
+        AppConfig(ser_backend="sensevoice", ser_fallback_to_heuristic=False)
+    )
+    cause = OSError("model initialization failed")
+    backend_error = SERBackendError("model loading", str(cause), cause)
+
+    class FailingSenseVoiceBackend:
+        def warmup(self):
+            raise backend_error
+
+    failing_backend = FailingSenseVoiceBackend()
+    recognizer.backend = failing_backend
+
+    with pytest.raises(
+        RuntimeError,
+        match="SenseVoice SER warmup failed during model loading.*OSError.*model initialization failed",
+    ) as exc_info:
+        recognizer.warmup()
+
+    assert exc_info.value.__cause__ is backend_error
+    assert recognizer.backend is failing_backend
+    assert recognizer.backend_name == "sensevoice"
 
 
 def test_default_heuristic_does_not_import_funasr(monkeypatch, tmp_path) -> None:
@@ -436,6 +500,8 @@ def test_main_warms_and_reuses_one_sensevoice_recognizer(monkeypatch, tmp_path, 
     instances = []
 
     class FakeRecognizer:
+        backend_name = "sensevoice"
+
         def __init__(self, received_cfg):
             assert received_cfg is cfg
             instances.append(self)
@@ -467,6 +533,56 @@ def test_main_warms_and_reuses_one_sensevoice_recognizer(monkeypatch, tmp_path, 
     output = capsys.readouterr().out
     assert "[INIT] 正在预加载 SenseVoice SER 模型" in output
     assert "[INIT] SenseVoice SER 模型加载完成" in output
+
+
+def test_main_reports_heuristic_fallback_after_failed_warmup(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    import argparse
+    import main as main_module
+
+    cfg = AppConfig(
+        output_dir=tmp_path,
+        memory_file=tmp_path / "memory.json",
+        state_file=tmp_path / "emotion.json",
+        ser_backend="sensevoice",
+        llm_backend="mock",
+        tts_backend="mock",
+    )
+    args = argparse.Namespace(
+        mode="mic",
+        audio="",
+        text="manual text",
+        record_seconds=0.1,
+        no_play=True,
+    )
+
+    class FallbackRecognizer:
+        def __init__(self, received_cfg):
+            assert received_cfg is cfg
+            self.backend_name = "sensevoice"
+
+        def warmup(self):
+            self.backend_name = "heuristic"
+
+        def predict(self, wav_path):
+            return EmotionResult(
+                label="neutral", intensity=0.5, confidence=0.5, features={}
+            )
+
+    def fake_record(path, **kwargs):
+        Path(path).write_bytes(b"test audio placeholder")
+
+    monkeypatch.setattr(main_module, "parse_args", lambda: args)
+    monkeypatch.setattr(main_module.AppConfig, "from_env", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(main_module, "SpeechEmotionRecognizer", FallbackRecognizer)
+    monkeypatch.setattr(main_module, "record_from_mic", fake_record)
+
+    main_module.main()
+
+    output = capsys.readouterr().out
+    assert "[INIT] SenseVoice SER 预加载失败，已启用 heuristic fallback" in output
+    assert "[INIT] SenseVoice SER 模型加载完成" not in output
 
 
 def test_env_example_contains_safe_ser_defaults() -> None:

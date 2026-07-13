@@ -282,6 +282,7 @@ class SpeechEmotionRecognizer:
     def __init__(self, cfg: AppConfig):
         self.cfg = cfg
         backend_name = cfg.ser_backend.strip().lower()
+        self.configured_backend_name = backend_name
         self.backend_name = backend_name
         self._fallback = HeuristicSERBackend()
 
@@ -301,8 +302,25 @@ class SpeechEmotionRecognizer:
 
     def warmup(self) -> None:
         backend_warmup = getattr(self.backend, "warmup", None)
-        if callable(backend_warmup):
+        if not callable(backend_warmup):
+            return
+
+        try:
             backend_warmup()
+        except SERBackendError as exc:
+            if self.backend_name != "sensevoice" or not self.cfg.ser_fallback_to_heuristic:
+                raise RuntimeError(
+                    f"SenseVoice SER warmup failed during {exc.stage} "
+                    f"({exc.cause_type}): {exc}"
+                ) from exc
+            warnings.warn(
+                f"SenseVoice SER warmup failed during {exc.stage} "
+                f"({exc.cause_type}); falling back to heuristic: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            self.backend = self._fallback
+            self.backend_name = "heuristic"
 
     def predict(self, wav_path: Path) -> EmotionResult:
         try:

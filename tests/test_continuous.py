@@ -56,6 +56,8 @@ def _run_vad_main(
     remaining_texts = list(asr_texts)
 
     class FakeSER:
+        backend_name = "sensevoice"
+
         def __init__(self, received_cfg):
             assert received_cfg is cfg
             counters["ser_init"] += 1

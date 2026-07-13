@@ -213,7 +213,10 @@ def main() -> None:
         if cfg.ser_backend.strip().lower() == "sensevoice":
             print("[INIT] 正在预加载 SenseVoice SER 模型")
             ser.warmup()
-            print("[INIT] SenseVoice SER 模型加载完成")
+            if ser.backend_name == "sensevoice":
+                print("[INIT] SenseVoice SER 模型加载完成")
+            else:
+                print("[INIT] SenseVoice SER 预加载失败，已启用 heuristic fallback")
 
         needs_asr = not args.text and args.mode in {"mic", "vad", "file"}
         asr = ASRAdapter(cfg) if needs_asr else None
