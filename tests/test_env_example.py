@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from srtp_voice.config import AppConfig
+
 
 def test_env_example_has_no_bom() -> None:
     data = Path(".env.example").read_bytes()
@@ -36,3 +38,15 @@ def test_env_example_uses_qwen_instruct_model() -> None:
 
     assert "LLM_MODEL=qwen3:4b-instruct" in active
     assert "LLM_MODEL=qwen3:4b" not in active
+
+
+def test_tts_async_is_not_exposed(monkeypatch) -> None:
+    import srtp_voice.config as config_module
+
+    text = Path(".env.example").read_text(encoding="utf-8")
+    assert "TTS_ASYNC" not in text
+
+    monkeypatch.setattr(config_module, "load_dotenv", None)
+    monkeypatch.setenv("TTS_ASYNC", "1")
+    cfg = AppConfig.from_env()
+    assert not hasattr(cfg, "tts_async")

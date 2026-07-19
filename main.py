@@ -25,7 +25,9 @@ from srtp_voice.utils import ensure_dir, save_json
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="SRTP 表情机器人语音通路 V2：对齐学长 ASR-LLM-TTS + VAD 状态机方案")
+    parser = argparse.ArgumentParser(
+        description="SRTP 表情机器人语音交互：VAD / SER / ASR / LLM / TTS"
+    )
     parser.add_argument(
         "--mode",
         choices=["console", "mic", "vad", "file"],

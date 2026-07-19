@@ -290,14 +290,10 @@ class SpeechEmotionRecognizer:
             self.backend: SERBackend = self._fallback
         elif backend_name == "sensevoice":
             self.backend = SenseVoiceSERBackend(cfg)
-        elif backend_name == "custom":
-            raise NotImplementedError(
-                "SER_BACKEND=custom is reserved for a future explicit backend implementation"
-            )
         else:
             raise ValueError(
                 f"unsupported SER_BACKEND={cfg.ser_backend!r}; "
-                "expected heuristic, sensevoice, or custom"
+                "expected heuristic or sensevoice"
             )
 
     def warmup(self) -> None:
