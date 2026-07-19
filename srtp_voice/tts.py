@@ -93,7 +93,11 @@ class TTSAdapter:
         ffmpeg = shutil.which("ffmpeg")
         if not ffmpeg:
             raise RuntimeError(
-                "edge_tts 需要 ffmpeg 将 mp3 转为 wav。请安装：winget install Gyan.FFmpeg"
+                "edge-tts 已经生成 MP3，但未找到 FFmpeg，无法继续转换为 WAV。\n"
+                "Windows PowerShell:\n"
+                "  winget install --id Gyan.FFmpeg --exact\n"
+                "Ubuntu Bash:\n"
+                "  sudo apt install ffmpeg"
             )
 
         cmd = [
