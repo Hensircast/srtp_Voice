@@ -12,6 +12,7 @@ from srtp_voice.audio_io import (
 )
 from srtp_voice.asr import ASRAdapter
 from srtp_voice.config import AppConfig
+from srtp_voice.diagnostics import collect_diagnostics, print_diagnostics
 from srtp_voice.emotion_state import EmotionStateSmoother
 from srtp_voice.lip_sync import build_energy_lip_sync
 from srtp_voice.llm import StrategyGenerator
@@ -38,6 +39,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--text", type=str, default="", help="直接指定 ASR 文本，便于调试")
     parser.add_argument("--record-seconds", type=float, default=5.0, help="mic 模式固定录音时长")
     parser.add_argument("--no-play", action="store_true", help="只生成回复音频，不播放")
+    parser.add_argument(
+        "--diagnose",
+        action="store_true",
+        help="只输出平台、依赖和音频设备诊断，然后退出",
+    )
     parser.add_argument(
         "--continuous",
         action="store_true",
@@ -188,6 +194,11 @@ def run_one_turn(
 
 def main() -> None:
     args = parse_args()
+    if bool(getattr(args, "diagnose", False)):
+        cfg = AppConfig.from_env()
+        print_diagnostics(collect_diagnostics(cfg))
+        return
+
     continuous = bool(getattr(args, "continuous", False))
     if continuous and args.mode not in {"vad", "mic"}:
         raise ValueError("--continuous 仅支持 --mode vad 或 --mode mic")
