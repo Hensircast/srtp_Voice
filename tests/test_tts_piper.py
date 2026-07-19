@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
+import stat
 import subprocess
 import types
 from pathlib import Path
 
+import pytest
+
+import srtp_voice.config as config_module
 import srtp_voice.tts as tts_module
-from srtp_voice.config import AppConfig
+from srtp_voice.config import AppConfig, default_piper_executable
 from srtp_voice.streaming import AudioChunk, TextChunk
 from srtp_voice.tts import TTSAdapter
 
@@ -17,6 +21,7 @@ def _piper_files(tmp_path):
     exe.parent.mkdir(parents=True, exist_ok=True)
     model.parent.mkdir(parents=True, exist_ok=True)
     exe.write_bytes(b"exe")
+    exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
     model.write_bytes(b"model")
     return exe, model
 
@@ -70,6 +75,78 @@ def test_piper_command_and_utf8_stdin(monkeypatch, tmp_path) -> None:
     assert "--input-file" not in cmd
     assert captured["input"] == "你好\n".encode("utf-8")
     assert captured["timeout"] == 12
+
+
+@pytest.mark.parametrize(
+    ("system_name", "expected"),
+    [
+        ("Windows", Path("tools/piper/piper.exe")),
+        ("Linux", Path("tools/piper/piper")),
+        ("Darwin", Path("tools/piper/piper")),
+    ],
+)
+def test_piper_platform_default_path(monkeypatch, system_name, expected) -> None:
+    assert default_piper_executable(system_name) == expected
+
+    monkeypatch.setattr(config_module.platform, "system", lambda: system_name)
+    monkeypatch.setattr(config_module, "load_dotenv", None)
+    monkeypatch.delenv("TTS_PIPER_EXE", raising=False)
+
+    assert AppConfig().tts_piper_exe == expected
+    assert AppConfig.from_env().tts_piper_exe == expected
+
+
+@pytest.mark.parametrize("system_name", ["Windows", "Linux"])
+def test_piper_explicit_executable_override_wins(monkeypatch, system_name) -> None:
+    monkeypatch.setattr(config_module.platform, "system", lambda: system_name)
+    monkeypatch.setattr(config_module, "load_dotenv", None)
+    monkeypatch.setenv("TTS_PIPER_EXE", "custom/runtime/piper-custom")
+
+    assert AppConfig.from_env().tts_piper_exe == Path("custom/runtime/piper-custom")
+
+
+def test_piper_non_windows_requires_execute_permission(monkeypatch, tmp_path) -> None:
+    out_wav = tmp_path / "reply.wav"
+    cfg = _cfg(tmp_path)
+    access_calls = []
+
+    monkeypatch.setattr(tts_module, "is_windows_platform", lambda: False)
+
+    def fake_access(path, mode):
+        access_calls.append((path, mode))
+        return False
+
+    monkeypatch.setattr(tts_module.os, "access", fake_access)
+    monkeypatch.setattr(
+        tts_module.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("Piper must not run without execute permission"),
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        TTSAdapter(cfg).synthesize("hello", out_wav)
+
+    message = str(exc_info.value)
+    assert str(cfg.tts_piper_exe) in message
+    assert f"chmod +x {cfg.tts_piper_exe}" in message
+    assert access_calls == [(cfg.tts_piper_exe, tts_module.os.X_OK)]
+
+
+def test_piper_windows_skips_posix_execute_check(monkeypatch, tmp_path) -> None:
+    out_wav = tmp_path / "reply.wav"
+    cfg = _cfg(tmp_path)
+    captured = _fake_run(monkeypatch, out_wav)
+
+    monkeypatch.setattr(tts_module, "is_windows_platform", lambda: True)
+    monkeypatch.setattr(
+        tts_module.os,
+        "access",
+        lambda *args, **kwargs: pytest.fail("Windows must not perform a POSIX execute check"),
+    )
+
+    TTSAdapter(cfg).synthesize("hello", out_wav)
+
+    assert captured["cmd"][0] == str(cfg.tts_piper_exe)
 
 
 def test_piper_removes_stale_output_before_run(monkeypatch, tmp_path) -> None:
@@ -269,9 +346,8 @@ def test_piper_empty_text_and_default_backend(tmp_path) -> None:
 
 
 def test_piper_env_config_parsing(monkeypatch) -> None:
-    import srtp_voice.config as config_module
-
     monkeypatch.setattr(config_module, "load_dotenv", None)
+    monkeypatch.setattr(config_module.platform, "system", lambda: "Windows")
     for name in [
         "TTS_BACKEND",
         "TTS_PIPER_EXE",
@@ -330,15 +406,16 @@ def test_env_example_and_gitignore_for_piper() -> None:
     env_bytes = Path(".env.example").read_bytes()
     assert not env_bytes.startswith(b"\xef\xbb\xbf")
     env_text = env_bytes.decode("utf-8")
+    env_lines = [line.strip() for line in env_text.splitlines()]
     assert "TTS_BACKEND=mock" in env_text
     assert "# TTS_BACKEND=piper" in env_text
-    assert "TTS_PIPER_EXE=tools/piper/piper.exe" in env_text
+    assert "# TTS_PIPER_EXE=tools/piper/piper.exe" in env_lines
+    assert "# TTS_PIPER_EXE=tools/piper/piper" in env_lines
     assert "TTS_PIPER_MODEL=models/piper/zh_CN-huayan-medium/your-model.onnx" in env_text
     active_lines = [
-        line.strip()
-        for line in env_text.splitlines()
-        if line.strip() and not line.strip().startswith("#")
+        line for line in env_lines if line and not line.startswith("#")
     ]
+    assert not any(line.startswith("TTS_PIPER_EXE=") for line in active_lines)
     assert not any(line.startswith("TTS_PIPER_CONFIG=") for line in active_lines)
     assert "# TTS_PIPER_CONFIG=models/piper/zh_CN-huayan-medium/your-model.onnx.json" in env_text
 

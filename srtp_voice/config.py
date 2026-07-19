@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+import platform
+from dataclasses import dataclass, field
 from pathlib import Path
 
 try:
@@ -27,6 +28,16 @@ def env_text(name: str, default: str | None = None) -> str | None:
 
 def derive_url(base_url: str, endpoint: str) -> str:
     return f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}"
+
+
+def is_windows_platform(system_name: str | None = None) -> bool:
+    name = platform.system() if system_name is None else system_name
+    return name.strip().lower() == "windows"
+
+
+def default_piper_executable(system_name: str | None = None) -> Path:
+    filename = "piper.exe" if is_windows_platform(system_name) else "piper"
+    return Path("tools") / "piper" / filename
 
 
 @dataclass
@@ -76,7 +87,7 @@ class AppConfig:
     # TTS: mock beep WAV, edge-tts, or local Piper.
     tts_backend: str = "mock"  # mock / edge_tts / piper
     tts_voice: str = "zh-CN-XiaoxiaoNeural"
-    tts_piper_exe: Path = Path("tools/piper/piper.exe")
+    tts_piper_exe: Path = field(default_factory=default_piper_executable)
     tts_piper_model: Path = Path("models/piper/zh_CN-huayan-medium/model.onnx")
     tts_piper_config: Path | None = None
     tts_piper_timeout_seconds: int = 60
@@ -150,7 +161,9 @@ class AppConfig:
             llm_timeout_seconds=int(os.getenv("LLM_TIMEOUT_SECONDS", "180")),
             tts_backend=os.getenv("TTS_BACKEND", "mock"),
             tts_voice=os.getenv("TTS_VOICE", "zh-CN-XiaoxiaoNeural"),
-            tts_piper_exe=Path(env_text("TTS_PIPER_EXE", "tools/piper/piper.exe")),
+            tts_piper_exe=Path(
+                env_text("TTS_PIPER_EXE", str(default_piper_executable()))
+            ),
             tts_piper_model=Path(env_text("TTS_PIPER_MODEL", "models/piper/zh_CN-huayan-medium/model.onnx")),
             tts_piper_config=Path(value) if (value := env_text("TTS_PIPER_CONFIG")) else None,
             tts_piper_timeout_seconds=max(1, int(os.getenv("TTS_PIPER_TIMEOUT_SECONDS", "60"))),

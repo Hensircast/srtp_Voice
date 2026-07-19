@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import os
 import shutil
 import shlex
 import struct
@@ -10,7 +11,7 @@ import subprocess
 import wave
 from pathlib import Path
 
-from .config import AppConfig
+from .config import AppConfig, is_windows_platform
 
 
 class TTSAdapter:
@@ -122,6 +123,11 @@ class TTSAdapter:
         model = self.cfg.tts_piper_model
         if not exe.is_file():
             raise FileNotFoundError(f"piper executable not found: {exe}")
+        if not is_windows_platform() and not os.access(exe, os.X_OK):
+            raise RuntimeError(
+                "piper executable is not executable on this platform. "
+                f"exe={exe}. Grant execute permission with: chmod +x {exe}"
+            )
         if not model.is_file():
             raise FileNotFoundError(f"piper model not found: {model}")
 
