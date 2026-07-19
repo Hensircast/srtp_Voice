@@ -50,3 +50,15 @@ def test_tts_async_is_not_exposed(monkeypatch) -> None:
     monkeypatch.setenv("TTS_ASYNC", "1")
     cfg = AppConfig.from_env()
     assert not hasattr(cfg, "tts_async")
+
+
+def test_inactive_serial_settings_are_not_exposed() -> None:
+    lines = [
+        line.strip()
+        for line in Path(".env.example").read_text(encoding="utf-8").splitlines()
+    ]
+    active = [line for line in lines if line and not line.startswith("#")]
+
+    assert not any(line.startswith("SERIAL_PORT=") for line in active)
+    assert not any(line.startswith("SERIAL_BAUDRATE=") for line in active)
+    assert not any(line.startswith("SERIAL_ENABLE=") for line in active)
