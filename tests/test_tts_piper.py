@@ -244,7 +244,7 @@ def test_piper_missing_exe_and_model(tmp_path) -> None:
     else:
         raise AssertionError("missing exe should raise")
 
-    exe.write_bytes(b"exe")
+    exe, model = _piper_files(tmp_path)
     model.unlink()
     try:
         TTSAdapter(AppConfig(tts_backend="piper", tts_piper_exe=exe, tts_piper_model=model)).synthesize("hi", tmp_path / "a.wav")
