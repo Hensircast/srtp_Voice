@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import os
 import shutil
 import shlex
 import struct
@@ -10,7 +11,7 @@ import subprocess
 import wave
 from pathlib import Path
 
-from .config import AppConfig
+from .config import AppConfig, is_windows_platform
 
 
 class TTSAdapter:
@@ -92,7 +93,11 @@ class TTSAdapter:
         ffmpeg = shutil.which("ffmpeg")
         if not ffmpeg:
             raise RuntimeError(
-                "edge_tts 需要 ffmpeg 将 mp3 转为 wav。请安装：winget install Gyan.FFmpeg"
+                "edge-tts 已经生成 MP3，但未找到 FFmpeg，无法继续转换为 WAV。\n"
+                "Windows PowerShell:\n"
+                "  winget install --id Gyan.FFmpeg --exact\n"
+                "Ubuntu Bash:\n"
+                "  sudo apt install ffmpeg"
             )
 
         cmd = [
@@ -122,6 +127,11 @@ class TTSAdapter:
         model = self.cfg.tts_piper_model
         if not exe.is_file():
             raise FileNotFoundError(f"piper executable not found: {exe}")
+        if not is_windows_platform() and not os.access(exe, os.X_OK):
+            raise RuntimeError(
+                "piper executable is not executable on this platform. "
+                f"exe={exe}. Grant execute permission with: chmod +x {exe}"
+            )
         if not model.is_file():
             raise FileNotFoundError(f"piper model not found: {model}")
 

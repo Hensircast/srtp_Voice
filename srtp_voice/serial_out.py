@@ -29,7 +29,10 @@ def send_serial_packet(packet: Dict[str, Any], port: str, baudrate: int = 115200
     try:
         import serial
     except ImportError:
-        print("[SERIAL] 未安装 pyserial，仅保存动作文件")
+        print(
+            "[SERIAL] pyserial 未安装，无法发送串口数据。"
+            "请运行：python -m pip install pyserial"
+        )
         return False
 
     try:
@@ -39,5 +42,9 @@ def send_serial_packet(packet: Dict[str, Any], port: str, baudrate: int = 115200
         print(f"[SERIAL] 已发送到 {port}")
         return True
     except Exception as exc:
-        print(f"[SERIAL] 串口发送失败：{exc}")
+        print(
+            "[SERIAL] 串口发送失败："
+            f"port={port}, baudrate={baudrate}, "
+            f"error={type(exc).__name__}: {exc}"
+        )
         return False

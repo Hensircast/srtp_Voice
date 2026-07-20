@@ -40,7 +40,7 @@ def _install_fake_funasr(monkeypatch, model_class) -> None:
 def _sensevoice_cfg(model_path: Path, **overrides) -> AppConfig:
     values = {
         "ser_backend": "sensevoice",
-        "ser_model": str(model_path),
+        "ser_model": model_path,
         "ser_device": "cpu",
         "ser_language": "zh",
         "ser_fallback_to_heuristic": False,
@@ -76,7 +76,7 @@ def test_app_config_parses_ser_environment(monkeypatch) -> None:
     cfg = AppConfig.from_env()
 
     assert cfg.ser_backend == "sensevoice"
-    assert cfg.ser_model == "models/ser/custom"
+    assert cfg.ser_model == Path("models/ser/custom")
     assert cfg.ser_device == "cuda:0"
     assert cfg.ser_language == "en"
     assert cfg.ser_fallback_to_heuristic is False
@@ -443,15 +443,14 @@ def test_sensevoice_failure_without_fallback_preserves_context(monkeypatch, tmp_
     assert str(wav_path) in str(exc_info.value)
 
 
-@pytest.mark.parametrize("backend", ["unknown-backend", ""])
+@pytest.mark.parametrize("backend", ["custom", "unknown-backend", ""])
 def test_unknown_ser_backend_is_explicit(backend) -> None:
-    with pytest.raises(ValueError, match="unsupported SER_BACKEND"):
+    with pytest.raises(ValueError, match="unsupported SER_BACKEND") as exc_info:
         SpeechEmotionRecognizer(AppConfig(ser_backend=backend))
 
-
-def test_custom_ser_backend_is_explicitly_unimplemented() -> None:
-    with pytest.raises(NotImplementedError, match="SER_BACKEND=custom"):
-        SpeechEmotionRecognizer(AppConfig(ser_backend="custom"))
+    message = str(exc_info.value)
+    assert "heuristic" in message
+    assert "sensevoice" in message
 
 
 def test_result_bounds_and_label_are_normalized(tmp_path) -> None:

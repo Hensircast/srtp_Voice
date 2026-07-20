@@ -6,6 +6,8 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 from srtp_voice.asr import ASRAdapter
 from srtp_voice.config import AppConfig
 
@@ -54,6 +56,19 @@ def test_mock_backend_without_faster_whisper(monkeypatch, tmp_path) -> None:
     cfg = AppConfig(asr_backend="mock")
     result = ASRAdapter(cfg).transcribe(tmp_path / "missing.wav")
     assert result
+
+
+@pytest.mark.parametrize(
+    "backend",
+    ["sensevoice_onnx", "sensevoice", "funasr", "whisper_cpp", "unknown"],
+)
+def test_unsupported_asr_backends_are_rejected(backend) -> None:
+    with pytest.raises(ValueError, match="unsupported ASR_BACKEND") as exc_info:
+        ASRAdapter(AppConfig(asr_backend=backend))
+
+    message = str(exc_info.value)
+    assert "mock" in message
+    assert "faster_whisper" in message
 
 
 def test_faster_whisper_missing_dependency(monkeypatch) -> None:

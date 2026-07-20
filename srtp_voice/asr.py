@@ -6,6 +6,9 @@ from typing import Any
 from .config import AppConfig
 
 
+SUPPORTED_ASR_BACKENDS = frozenset({"mock", "faster_whisper"})
+
+
 class ASRNoSpeechError(RuntimeError):
     pass
 
@@ -19,7 +22,12 @@ class ASRAdapter:
 
     def __init__(self, cfg: AppConfig):
         self.cfg = cfg
-        self.backend = cfg.asr_backend.lower()
+        self.backend = cfg.asr_backend.strip().lower()
+        if self.backend not in SUPPORTED_ASR_BACKENDS:
+            raise ValueError(
+                f"unsupported ASR_BACKEND={cfg.asr_backend!r}; "
+                "expected mock or faster_whisper"
+            )
         self.model: Any | None = None
         if self.backend == "faster_whisper":
             self.model = self._load_faster_whisper_model()
@@ -36,19 +44,7 @@ class ASRAdapter:
         if self.backend == "faster_whisper":
             return self._transcribe_faster_whisper(audio_path)
 
-        if self.backend == "sensevoice_onnx":
-            return self._sensevoice_onnx_placeholder(audio_path)
-
-        if self.backend == "sensevoice":
-            return self._sensevoice_pytorch_placeholder(audio_path)
-
-        if self.backend == "funasr":
-            return self._funasr_placeholder(audio_path)
-
-        if self.backend == "whisper_cpp":
-            return self._whisper_cpp_placeholder(audio_path)
-
-        raise ValueError(f"Unknown ASR_BACKEND: {self.cfg.asr_backend}")
+        raise RuntimeError(f"ASR backend dispatch failed: {self.backend}")
 
     def _load_faster_whisper_model(self):
         try:
@@ -92,15 +88,3 @@ class ASRAdapter:
             raise RuntimeError(
                 f"ASR backend 'faster_whisper' failed for audio '{wav_path}'."
             ) from exc
-
-    def _sensevoice_onnx_placeholder(self, wav_path: Path) -> str:
-        raise NotImplementedError("Please implement SenseVoiceSmall INT8 ONNX in srtp_voice/asr.py")
-
-    def _sensevoice_pytorch_placeholder(self, wav_path: Path) -> str:
-        raise NotImplementedError("Please implement SenseVoiceSmall PyTorch/FunASR in srtp_voice/asr.py")
-
-    def _funasr_placeholder(self, wav_path: Path) -> str:
-        raise NotImplementedError("Please implement FunASR Paraformer in srtp_voice/asr.py")
-
-    def _whisper_cpp_placeholder(self, wav_path: Path) -> str:
-        raise NotImplementedError("Please implement whisper.cpp in srtp_voice/asr.py")
