@@ -40,7 +40,7 @@ def _install_fake_funasr(monkeypatch, model_class) -> None:
 def _sensevoice_cfg(model_path: Path, **overrides) -> AppConfig:
     values = {
         "ser_backend": "sensevoice",
-        "ser_model": str(model_path),
+        "ser_model": model_path,
         "ser_device": "cpu",
         "ser_language": "zh",
         "ser_fallback_to_heuristic": False,
@@ -76,7 +76,7 @@ def test_app_config_parses_ser_environment(monkeypatch) -> None:
     cfg = AppConfig.from_env()
 
     assert cfg.ser_backend == "sensevoice"
-    assert cfg.ser_model == "models/ser/custom"
+    assert cfg.ser_model == Path("models/ser/custom")
     assert cfg.ser_device == "cuda:0"
     assert cfg.ser_language == "en"
     assert cfg.ser_fallback_to_heuristic is False

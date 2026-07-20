@@ -109,7 +109,7 @@ class AppConfig:
 
     # SER: lightweight heuristic by default; SenseVoice uses a local model only.
     ser_backend: str = "heuristic"  # heuristic / sensevoice
-    ser_model: str | None = None
+    ser_model: Path | None = None
     ser_device: str = "cpu"
     ser_language: str = "zh"
     ser_fallback_to_heuristic: bool = True
@@ -181,7 +181,7 @@ class AppConfig:
             asr_min_silence_ms=max(1, int(os.getenv("ASR_MIN_SILENCE_MS", "500"))),
             asr_condition_on_previous_text=env_bool("ASR_CONDITION_ON_PREVIOUS_TEXT", False),
             ser_backend=env_text("SER_BACKEND", "heuristic"),
-            ser_model=env_text("SER_MODEL"),
+            ser_model=Path(value) if (value := env_text("SER_MODEL")) else None,
             ser_device=env_text("SER_DEVICE", "cpu"),
             ser_language=env_text("SER_LANGUAGE", "zh"),
             ser_fallback_to_heuristic=env_bool("SER_FALLBACK_TO_HEURISTIC", True),
