@@ -20,7 +20,7 @@ def build_serial_packet(action: Dict[str, Any], lip_sync: Dict[str, Any]) -> Dic
 def save_serial_packet(packet: Dict[str, Any], output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
-        json.dumps(packet, ensure_ascii=False, indent=2),
+        json.dumps(packet, ensure_ascii=False, indent=2, allow_nan=False),
         encoding="utf-8",
     )
 
@@ -36,7 +36,7 @@ def send_serial_packet(packet: Dict[str, Any], port: str, baudrate: int = 115200
         return False
 
     try:
-        payload = json.dumps(packet, ensure_ascii=False) + "\n"
+        payload = json.dumps(packet, ensure_ascii=False, allow_nan=False) + "\n"
         with serial.Serial(port, baudrate, timeout=1) as ser:
             ser.write(payload.encode("utf-8"))
         print(f"[SERIAL] 已发送到 {port}")

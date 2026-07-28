@@ -392,14 +392,14 @@ def test_streaming_interfaces_and_tts_streaming_placeholder() -> None:
     assert audio.channels == 1
     assert text.is_final is False
 
-    adapter = TTSAdapter(AppConfig(tts_backend="mock"))
-    assert adapter.supports_streaming() is False
-    try:
-        adapter.synthesize_stream("hello")
-    except NotImplementedError as exc:
-        assert "does not support streaming TTS" in str(exc)
-    else:
-        raise AssertionError("streaming should not be implemented yet")
+    for backend in ("mock", "edge_tts", "piper"):
+        adapter = TTSAdapter(AppConfig(tts_backend=backend))
+        assert adapter.supports_streaming() is False
+        with pytest.raises(
+            NotImplementedError,
+            match="does not support streaming TTS",
+        ):
+            adapter.synthesize_stream("hello")
 
 
 def test_env_example_and_gitignore_for_piper() -> None:

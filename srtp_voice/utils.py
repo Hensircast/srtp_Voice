@@ -11,7 +11,10 @@ def ensure_dir(path: Path) -> None:
 
 def save_json(path: Path, data: Any) -> None:
     ensure_dir(path.parent)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2, allow_nan=False),
+        encoding="utf-8",
+    )
 
 
 def load_json(path: Path, default: Any) -> Any:

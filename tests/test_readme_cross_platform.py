@@ -58,8 +58,8 @@ def test_readme_covers_cross_platform_piper_and_ci() -> None:
     assert "ubuntu-latest" in text
     assert "Python 3.11" in text
     assert "CI 不运行真实麦克风" in text
-    assert "Startup failure" in text
-    assert "不能记为 Windows/Ubuntu 已通过" in text
+    assert "Windows/Ubuntu CI 离线测试均已覆盖" in text
+    assert "CI 通过不能代替真实音频设备和模型工作流验收" in text
 
 
 def test_readme_preserves_lip_sync_and_serial_boundaries() -> None:
@@ -72,6 +72,17 @@ def test_readme_preserves_lip_sync_and_serial_boundaries() -> None:
     assert "COM3" in text
     assert "/dev/ttyACM0" in text
     assert "/dev/ttyUSB0" in text
+
+
+def test_readme_documents_v16_emotion_fusion_boundaries() -> None:
+    text = _readme()
+
+    assert "V1.6" in text
+    assert "`confidence` 表示融合证据强度，不是 SenseVoice 模型概率" in text
+    assert "不能可靠区分 `happy/angry` 或 `sad/tired`" in text
+    assert "EMOTION_DECAY_HALF_LIFE_SECONDS" in text
+    assert "EMOTION_MAX_STEP" in text
+    assert "未实现真实流式流水线" in text
 
 
 def test_readme_does_not_restore_removed_backends_or_settings() -> None:
