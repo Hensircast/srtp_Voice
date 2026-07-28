@@ -49,6 +49,7 @@ def _run_vad_main(
         "tts_init": 0,
         "synthesize": 0,
         "smoother_init": 0,
+        "smoother_decay": 0,
         "memory_init": 0,
         "record": 0,
         "ser_results": [],
@@ -122,6 +123,10 @@ def _run_vad_main(
             counters["smoother_init"] += 1
 
         def update(self, emotion):
+            return Smoothed()
+
+        def decay(self):
+            counters["smoother_decay"] += 1
             return Smoothed()
 
     class FakeMemory:
@@ -261,8 +266,33 @@ def test_continuous_no_speech_continues_next_turn(monkeypatch, tmp_path, capsys)
     assert counters["ser_predict"] == 1
     assert counters["asr_transcribe"] == 1
     assert counters["generate"] == 1
+    assert counters["smoother_decay"] == 1
     assert state["stage"] == "Idle"
-    assert "未检测到有效语音，本轮结束，继续监听" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "未检测到有效语音，本轮结束，继续监听" in output
+    assert "no_evidence_decay=label=neutral" in output
+
+
+def test_continuous_each_silent_turn_decays_without_downstream_work(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    counters, state = _run_vad_main(
+        monkeypatch,
+        tmp_path,
+        continuous=True,
+        record_actions=["no_speech", "no_speech", "interrupt"],
+        asr_texts=[],
+    )
+
+    assert counters["smoother_decay"] == 2
+    assert counters["ser_predict"] == 0
+    assert counters["asr_transcribe"] == 0
+    assert counters["generate"] == 0
+    assert counters["synthesize"] == 0
+    assert counters["memory_states"] == []
+    assert counters["serial_packets"] == []
+    assert state["stage"] == "Idle"
 
 
 def test_continuous_empty_asr_continues_next_turn(monkeypatch, tmp_path, capsys) -> None:

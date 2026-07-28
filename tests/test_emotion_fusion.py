@@ -181,6 +181,42 @@ def test_sensevoice_adapter_values_are_not_treated_as_model_probability() -> Non
     )
 
 
+def test_known_sensevoice_label_survives_without_prosody() -> None:
+    result = fuse_emotion(
+        EmotionResult("happy", 0.9, 0.9, {}),
+        None,
+        source="sensevoice",
+    )
+
+    assert result.emotion.label == "happy"
+    assert result.emotion.intensity == 0.5
+    assert result.emotion.confidence == 0.5
+    assert result.emotion.features == {
+        "prosody_available": 0.0,
+        "fusion_signal_quality": 0.0,
+        "fusion_evidence_strength": 0.5,
+        "fusion_is_fallback": 0.0,
+    }
+    assert result.evidence[1].features == {"available": False}
+
+
+def test_unknown_without_prosody_is_conservative_and_has_no_measurements() -> None:
+    result = fuse_emotion(
+        EmotionResult("unknown", 0.5, 0.5, {}),
+        None,
+        source="sensevoice",
+    )
+
+    assert result.emotion.label == "neutral"
+    assert result.emotion.intensity == 0.0
+    assert result.emotion.confidence == 0.0
+    assert result.emotion.features["prosody_available"] == 0.0
+    assert not any(
+        name.startswith(("rms", "f0"))
+        for name in result.emotion.features
+    )
+
+
 def test_heuristic_and_fallback_are_marked_low_reliability() -> None:
     features = _prosody()
     heuristic = fuse_emotion(

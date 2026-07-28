@@ -7,7 +7,7 @@ from typing import Any, Protocol
 
 from .config import AppConfig
 from .emotion_fusion import fuse_emotion
-from .prosody import extract_prosody_features
+from .prosody import ProsodyUnavailableError, extract_prosody_features
 from .types import EmotionResult, FusedEmotionResult, ProsodyFeatures
 
 
@@ -295,15 +295,22 @@ class SpeechEmotionRecognizer:
             self.backend = self._fallback
             self.backend_name = "heuristic"
 
+    @staticmethod
+    def _extract_optional_prosody(path: Path) -> ProsodyFeatures | None:
+        try:
+            return extract_prosody_features(path)
+        except ProsodyUnavailableError:
+            return None
+
     def predict(self, wav_path: Path) -> EmotionResult:
         path = Path(wav_path)
-        prosody = extract_prosody_features(path)
         is_active_fallback = (
             self.configured_backend_name == "sensevoice"
             and self.backend_name == "heuristic"
         )
 
         if isinstance(self.backend, HeuristicSERBackend):
+            prosody = self._extract_optional_prosody(path)
             source = "fallback" if is_active_fallback else "heuristic"
             self.last_fused_result = fuse_emotion(
                 EmotionResult("unknown", 0.0, 0.0, {}),
@@ -316,7 +323,11 @@ class SpeechEmotionRecognizer:
         try:
             result = self.backend.predict(path)
         except SERBackendError as exc:
-            if self.backend_name != "sensevoice" or not self.cfg.ser_fallback_to_heuristic:
+            if (
+                self.backend_name != "sensevoice"
+                or not self.cfg.ser_fallback_to_heuristic
+                or exc.stage == "input validation"
+            ):
                 raise RuntimeError(
                     f"SER backend 'sensevoice' failed during {exc.stage} "
                     f"({exc.cause_type}) for audio '{wav_path}': {exc}"
@@ -327,6 +338,7 @@ class SpeechEmotionRecognizer:
                 RuntimeWarning,
                 stacklevel=2,
             )
+            prosody = self._extract_optional_prosody(path)
             self.last_fused_result = fuse_emotion(
                 EmotionResult("unknown", 0.0, 0.0, {}),
                 prosody,
@@ -341,6 +353,7 @@ class SpeechEmotionRecognizer:
             confidence=result.confidence,
             features=result.features,
         )
+        prosody = self._extract_optional_prosody(path)
         self.last_fused_result = fuse_emotion(
             normalized,
             prosody,

@@ -86,6 +86,12 @@ def run_one_turn(
                 print("      未检测到有效语音，本轮结束，继续监听")
             else:
                 print("      未检测到有效语音，本轮结束")
+            decayed = smoother.decay()
+            print(
+                "      no_evidence_decay="
+                f"label={decayed.label}, V={decayed.valence:.2f}, "
+                f"A={decayed.arousal:.2f}, D={decayed.dominance:.2f}"
+            )
             fsm.set(DialogueStage.IDLE)
             save_fsm_state(fsm, state_file)
             return

@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from srtp_voice.config import AppConfig
+from srtp_voice.prosody import UnsupportedProsodyFormatError
 from srtp_voice.ser import (
     HeuristicSERBackend,
     SERBackendError,
@@ -28,6 +29,16 @@ def _write_wav(path: Path, samples: list[int], sample_rate: int = 16000) -> Path
         wav_file.setframerate(sample_rate)
         if samples:
             wav_file.writeframes(struct.pack("<" + "h" * len(samples), *samples))
+    return path
+
+
+def _write_non_pcm16_wav(path: Path, sample_width: int) -> Path:
+    frame = b"\x80" if sample_width == 1 else b"\x00" * sample_width
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(sample_width)
+        wav_file.setframerate(16000)
+        wav_file.writeframes(frame * 160)
     return path
 
 
@@ -514,6 +525,114 @@ def test_recognizer_extracts_prosody_once_per_wav(monkeypatch, tmp_path) -> None
 
     assert result.label == "happy"
     assert calls == [tmp_path / "input.wav"]
+
+
+def test_expected_prosody_error_does_not_block_sensevoice(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import srtp_voice.ser as ser_module
+
+    recognizer = SpeechEmotionRecognizer(
+        AppConfig(ser_backend="sensevoice", ser_fallback_to_heuristic=False)
+    )
+    calls = []
+
+    class FakeBackend:
+        def predict(self, wav_path):
+            calls.append(Path(wav_path))
+            return EmotionResult("happy", 0.5, 0.5, {})
+
+    recognizer.backend = FakeBackend()
+
+    def unsupported(path):
+        raise UnsupportedProsodyFormatError("24-bit PCM is unsupported")
+
+    monkeypatch.setattr(ser_module, "extract_prosody_features", unsupported)
+
+    result = recognizer.predict(tmp_path / "pcm24.wav")
+
+    assert calls == [tmp_path / "pcm24.wav"]
+    assert result.label == "happy"
+    assert result.features["prosody_available"] == 0.0
+    assert not any(name.startswith(("rms", "f0")) for name in result.features)
+
+
+@pytest.mark.parametrize("sample_width", [1, 3])
+def test_real_non_pcm16_wav_keeps_sensevoice_label(
+    tmp_path,
+    sample_width,
+) -> None:
+    wav_path = _write_non_pcm16_wav(
+        tmp_path / f"pcm{sample_width * 8}.wav",
+        sample_width,
+    )
+    recognizer = SpeechEmotionRecognizer(
+        AppConfig(ser_backend="sensevoice", ser_fallback_to_heuristic=False)
+    )
+    calls = []
+
+    class FakeBackend:
+        def predict(self, path):
+            calls.append(Path(path))
+            return EmotionResult("surprise", 0.5, 0.5, {})
+
+    recognizer.backend = FakeBackend()
+
+    result = recognizer.predict(wav_path)
+
+    assert calls == [wav_path]
+    assert result.label == "surprise"
+    assert result.intensity == 0.5
+    assert result.confidence == 0.5
+    assert result.features["prosody_available"] == 0.0
+
+
+def test_heuristic_non_pcm16_uses_explicit_unavailable_evidence(tmp_path) -> None:
+    wav_path = _write_non_pcm16_wav(tmp_path / "pcm8.wav", 1)
+
+    result = SpeechEmotionRecognizer(
+        AppConfig(ser_backend="heuristic")
+    ).predict(wav_path)
+
+    assert result.label == "neutral"
+    assert result.intensity == 0.0
+    assert result.confidence == 0.0
+    assert result.features["prosody_available"] == 0.0
+    assert not any(name.startswith(("rms", "f0")) for name in result.features)
+
+
+def test_unexpected_prosody_runtime_error_is_not_swallowed(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import srtp_voice.ser as ser_module
+
+    recognizer = SpeechEmotionRecognizer(
+        AppConfig(ser_backend="sensevoice", ser_fallback_to_heuristic=False)
+    )
+    backend_calls = []
+
+    class FakeBackend:
+        def predict(self, path):
+            backend_calls.append(Path(path))
+            return EmotionResult("neutral", 0.5, 0.5, {})
+
+    recognizer.backend = FakeBackend()
+
+    def programming_error(path):
+        raise RuntimeError("unexpected prosody bug")
+
+    monkeypatch.setattr(
+        ser_module,
+        "extract_prosody_features",
+        programming_error,
+    )
+
+    with pytest.raises(RuntimeError, match="unexpected prosody bug"):
+        recognizer.predict(tmp_path / "input.wav")
+
+    assert backend_calls == [tmp_path / "input.wav"]
 
 
 def test_sensevoice_same_label_varies_with_audio_prosody(

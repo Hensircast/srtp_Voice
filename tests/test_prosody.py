@@ -10,7 +10,11 @@ from pathlib import Path
 import pytest
 
 import srtp_voice.prosody as prosody_module
-from srtp_voice.prosody import extract_prosody_features
+from srtp_voice.prosody import (
+    ProsodyUnavailableError,
+    UnsupportedProsodyFormatError,
+    extract_prosody_features,
+)
 from srtp_voice.types import EmotionResult
 
 
@@ -152,15 +156,29 @@ def test_missing_and_damaged_wav_errors_include_context(tmp_path) -> None:
         extract_prosody_features(truncated)
 
 
-def test_non_pcm16_wav_is_rejected(tmp_path) -> None:
-    path = tmp_path / "pcm8.wav"
+@pytest.mark.parametrize(
+    ("sample_width", "frame_data"),
+    [
+        (1, bytes([128] * 160)),
+        (3, b"\x00\x00\x00" * 160),
+    ],
+)
+def test_non_pcm16_wav_is_rejected(
+    tmp_path,
+    sample_width,
+    frame_data,
+) -> None:
+    path = tmp_path / f"pcm{sample_width * 8}.wav"
     with wave.open(str(path), "wb") as wav_file:
         wav_file.setnchannels(1)
-        wav_file.setsampwidth(1)
+        wav_file.setsampwidth(sample_width)
         wav_file.setframerate(16000)
-        wav_file.writeframes(bytes([128] * 160))
+        wav_file.writeframes(frame_data)
 
-    with pytest.raises(ValueError, match="16-bit PCM.*pcm8.wav"):
+    with pytest.raises(
+        UnsupportedProsodyFormatError,
+        match=f"16-bit PCM.*{path.name}",
+    ):
         extract_prosody_features(path)
 
 
@@ -181,7 +199,15 @@ def test_compressed_wav_format_is_rejected(tmp_path) -> None:
         + audio_data
     )
 
-    with pytest.raises(ValueError, match="compressed.wav"):
+    with pytest.raises(UnsupportedProsodyFormatError, match="compressed.wav"):
+        extract_prosody_features(path)
+
+
+def test_damaged_wav_uses_expected_unavailable_error(tmp_path) -> None:
+    path = tmp_path / "damaged-header.wav"
+    path.write_bytes(b"RIFF")
+
+    with pytest.raises(ProsodyUnavailableError, match="damaged-header.wav"):
         extract_prosody_features(path)
 
 

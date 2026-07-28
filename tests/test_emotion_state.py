@@ -201,6 +201,33 @@ def test_half_life_decay_moves_state_toward_neutral(tmp_path) -> None:
     assert later.label == "neutral"
 
 
+def test_repeated_decay_uses_previous_decay_timestamp(tmp_path) -> None:
+    path = tmp_path / "emotion.json"
+    path.write_text(
+        json.dumps(
+            {
+                "valence": 0.8,
+                "arousal": 0.6,
+                "dominance": 0.4,
+                "label": "happy",
+                "updated_at": 0.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    tracker = EmotionStateTracker(path, decay_half_life_seconds=10.0)
+
+    first = tracker.decay(now=10.0)
+    assert first.valence == pytest.approx(0.4)
+    assert first.updated_at == 10.0
+
+    second = tracker.decay(now=20.0)
+    assert second.valence == pytest.approx(0.2)
+    assert second.arousal == pytest.approx(0.15)
+    assert second.dominance == pytest.approx(0.1)
+    assert second.updated_at == 20.0
+
+
 def test_single_update_is_limited_by_max_step(tmp_path) -> None:
     tracker = EmotionStateTracker(
         tmp_path / "emotion.json",

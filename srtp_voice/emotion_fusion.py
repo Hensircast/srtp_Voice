@@ -49,6 +49,8 @@ SENSEVOICE_QUALITY_WEIGHT: Final[float] = 0.30
 HEURISTIC_EVIDENCE_BASE: Final[float] = 0.15
 HEURISTIC_QUALITY_WEIGHT: Final[float] = 0.40
 HEURISTIC_MAX_CONFIDENCE: Final[float] = 0.55
+NO_PROSODY_ADAPTER_INTENSITY: Final[float] = 0.50
+NO_PROSODY_LABEL_EVIDENCE: Final[float] = 0.50
 
 ABSOLUTE_SILENCE_RMS: Final[float] = 0.001
 LOW_ENERGY_RMS: Final[float] = 0.025
@@ -153,7 +155,7 @@ def _primary_evidence_strength(
 
 def fuse_emotion(
     base_emotion: EmotionResult,
-    prosody: ProsodyFeatures,
+    prosody: ProsodyFeatures | None,
     *,
     source: str,
     is_fallback: bool = False,
@@ -167,6 +169,56 @@ def fuse_emotion(
 
     normalized_source = str(source).strip().lower() or "heuristic"
     discrete_label = _normalized_label(base_emotion.label)
+
+    if prosody is None:
+        has_discrete_label = discrete_label != "unknown"
+        has_sensevoice_label = (
+            normalized_source == "sensevoice" and has_discrete_label
+        )
+        final_label = discrete_label if has_discrete_label else "neutral"
+        intensity = (
+            NO_PROSODY_ADAPTER_INTENSITY if has_sensevoice_label else 0.0
+        )
+        final_confidence = (
+            NO_PROSODY_LABEL_EVIDENCE if has_sensevoice_label else 0.0
+        )
+        emotion = EmotionResult(
+            label=final_label,
+            intensity=intensity,
+            confidence=final_confidence,
+            features={
+                "prosody_available": 0.0,
+                "fusion_signal_quality": 0.0,
+                "fusion_evidence_strength": final_confidence,
+                "fusion_is_fallback": 1.0 if is_fallback else 0.0,
+            },
+        )
+        evidence = [
+            EmotionEvidence(
+                source=normalized_source,
+                label=discrete_label,
+                intensity=intensity,
+                confidence=final_confidence,
+                features={
+                    "discrete_label_available": has_discrete_label,
+                    "signal_quality": 0.0,
+                    "prosody_available": False,
+                },
+                is_fallback=is_fallback,
+                timestamp_ms=timestamp_ms,
+            ),
+            EmotionEvidence(
+                source="prosody",
+                label="unknown",
+                intensity=0.0,
+                confidence=0.0,
+                features={"available": False},
+                is_fallback=is_fallback,
+                timestamp_ms=timestamp_ms,
+            ),
+        ]
+        return FusedEmotionResult(emotion=emotion, evidence=evidence)
+
     prosody_label = classify_unknown_prosody(prosody)
     intensity = prosody_intensity(prosody)
     signal_quality = prosody_signal_quality(prosody)
@@ -198,6 +250,7 @@ def fuse_emotion(
     numeric_features = prosody.numeric_dict()
     numeric_features.update(
         {
+            "prosody_available": 1.0,
             "fusion_signal_quality": signal_quality,
             "fusion_evidence_strength": final_confidence,
             "fusion_is_fallback": 1.0 if is_fallback else 0.0,
@@ -218,6 +271,7 @@ def fuse_emotion(
             features={
                 "discrete_label_available": discrete_label != "unknown",
                 "signal_quality": signal_quality,
+                "prosody_available": True,
             },
             is_fallback=is_fallback,
             timestamp_ms=timestamp_ms,

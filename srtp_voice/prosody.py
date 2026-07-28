@@ -11,6 +11,14 @@ from typing import Sequence
 from .types import ProsodyFeatures
 
 
+class ProsodyUnavailableError(ValueError):
+    """The WAV cannot be decoded by the lightweight prosody extractor."""
+
+
+class UnsupportedProsodyFormatError(ProsodyUnavailableError):
+    """The WAV is valid but its sample format is unsupported for prosody."""
+
+
 PCM16_SCALE = 32768.0
 ENERGY_FRAME_MS = 25
 F0_FRAME_MS = 50
@@ -51,27 +59,40 @@ def _read_pcm16_mono(path: Path) -> tuple[int, list[int]]:
             compression = wav_file.getcomptype()
             frame_count = wav_file.getnframes()
             raw = wav_file.readframes(frame_count)
-    except (EOFError, OSError, wave.Error) as exc:
-        raise ValueError(f"invalid or damaged WAV file '{audio_path}': {exc}") from exc
+    except wave.Error as exc:
+        error_type = (
+            UnsupportedProsodyFormatError
+            if "unknown format" in str(exc).lower()
+            else ProsodyUnavailableError
+        )
+        raise error_type(
+            f"prosody is unavailable for WAV file '{audio_path}': {exc}"
+        ) from exc
+    except EOFError as exc:
+        raise ProsodyUnavailableError(
+            f"prosody is unavailable for WAV file '{audio_path}': {exc}"
+        ) from exc
 
     if compression != "NONE":
-        raise ValueError(
+        raise UnsupportedProsodyFormatError(
             f"compressed WAV is not supported for prosody extraction: {audio_path}"
         )
     if sample_width != 2:
-        raise ValueError(
+        raise UnsupportedProsodyFormatError(
             f"prosody extraction requires 16-bit PCM WAV: {audio_path} "
             f"(sample_width={sample_width})"
         )
     if channels < 1 or sample_rate <= 0:
-        raise ValueError(
+        raise ProsodyUnavailableError(
             f"invalid WAV format for prosody extraction: {audio_path} "
             f"(channels={channels}, sample_rate={sample_rate})"
         )
     frame_width = channels * sample_width
     expected_bytes = frame_count * frame_width
     if len(raw) != expected_bytes or len(raw) % frame_width != 0:
-        raise ValueError(f"truncated PCM data in WAV file: {audio_path}")
+        raise ProsodyUnavailableError(
+            f"truncated PCM data in WAV file: {audio_path}"
+        )
 
     values = array.array("h")
     values.frombytes(raw)
