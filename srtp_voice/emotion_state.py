@@ -27,7 +27,7 @@ EMOTION_TO_VAD = {
 
 DEFAULT_DECAY_HALF_LIFE_SECONDS = 120.0
 DEFAULT_MAX_STEP = 0.25
-MIN_LABEL_DISTANCE_FROM_NEUTRAL = 0.12
+NEUTRAL_VAD_NORM_THRESHOLD = 0.12
 UNKNOWN_EVIDENCE_MULTIPLIER = 0.10
 INTENSITY_WEIGHT_FLOOR = 0.25
 INTENSITY_WEIGHT_SCALE = 0.75
@@ -45,9 +45,17 @@ def _clamp(value: object, minimum: float, maximum: float, default: float = 0.0) 
     return max(minimum, min(maximum, _finite_float(value, default)))
 
 
+def _is_neutral_vad(valence: float, arousal: float, dominance: float) -> bool:
+    magnitude = math.sqrt(
+        valence * valence
+        + arousal * arousal
+        + dominance * dominance
+    )
+    return magnitude <= NEUTRAL_VAD_NORM_THRESHOLD
+
+
 def _state_label(valence: float, arousal: float, dominance: float) -> str:
-    magnitude = math.sqrt(valence * valence + arousal * arousal + dominance * dominance)
-    if magnitude < MIN_LABEL_DISTANCE_FROM_NEUTRAL:
+    if _is_neutral_vad(valence, arousal, dominance):
         return "neutral"
     candidates = {
         label: values
@@ -177,12 +185,17 @@ class EmotionStateTracker:
 
     def decay(self, now: float | None = None) -> EmotionState:
         current_time = self._timestamp(now)
+        previous_label = self.state.label
         self._apply_decay(current_time)
-        self.state.label = _state_label(
+        is_neutral = _is_neutral_vad(
             self.state.valence,
             self.state.arousal,
             self.state.dominance,
         )
+        if is_neutral or previous_label in {"neutral", "unknown"}:
+            self.state.label = "neutral"
+        else:
+            self.state.label = previous_label
         self._save()
         return self.state
 

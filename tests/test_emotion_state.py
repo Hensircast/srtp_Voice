@@ -7,7 +7,12 @@ from pathlib import Path
 import pytest
 
 from srtp_voice.config import AppConfig
-from srtp_voice.emotion_state import EmotionStateSmoother, EmotionStateTracker
+from srtp_voice.emotion_state import (
+    EMOTION_TO_VAD,
+    NEUTRAL_VAD_NORM_THRESHOLD,
+    EmotionStateSmoother,
+    EmotionStateTracker,
+)
 from srtp_voice.types import EmotionResult
 
 
@@ -18,6 +23,30 @@ def _emotion(
     confidence: float = 1.0,
 ) -> EmotionResult:
     return EmotionResult(label, intensity, confidence, {})
+
+
+def _write_state(
+    path: Path,
+    *,
+    label: str,
+    vad: tuple[float, float, float] | None = None,
+    updated_at: float = 0.0,
+) -> None:
+    valence, arousal, dominance = vad or EMOTION_TO_VAD[label]
+    path.write_text(
+        json.dumps(
+            {
+                "valence": valence,
+                "arousal": arousal,
+                "dominance": dominance,
+                "label": label,
+                "intensity": 1.0,
+                "confidence": 1.0,
+                "updated_at": updated_at,
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def test_loads_legacy_vad_label_state(tmp_path) -> None:
@@ -199,6 +228,123 @@ def test_half_life_decay_moves_state_toward_neutral(tmp_path) -> None:
     assert abs(later.arousal) < 0.001
     assert abs(later.dominance) < 0.001
     assert later.label == "neutral"
+
+
+@pytest.mark.parametrize(
+    ("label", "forbidden_label"),
+    [
+        ("angry", "disgust"),
+        ("excited", "surprise"),
+    ],
+)
+def test_half_life_decay_preserves_original_label(
+    tmp_path,
+    label,
+    forbidden_label,
+) -> None:
+    path = tmp_path / f"{label}.json"
+    original = EMOTION_TO_VAD[label]
+    _write_state(path, label=label)
+    tracker = EmotionStateTracker(path, decay_half_life_seconds=10.0)
+
+    state = tracker.decay(now=10.0)
+
+    assert state.valence == pytest.approx(original[0] / 2.0)
+    assert state.arousal == pytest.approx(original[1] / 2.0)
+    assert state.dominance == pytest.approx(original[2] / 2.0)
+    assert state.label == label
+    assert state.label != forbidden_label
+
+
+@pytest.mark.parametrize("label", ["fear", "sad", "happy"])
+def test_decay_does_not_create_another_specific_emotion(tmp_path, label) -> None:
+    path = tmp_path / f"{label}.json"
+    _write_state(path, label=label)
+    tracker = EmotionStateTracker(path, decay_half_life_seconds=10.0)
+
+    state = tracker.decay(now=10.0)
+
+    assert state.label == label
+
+
+def test_repeated_decay_keeps_label_until_neutral_threshold(tmp_path) -> None:
+    path = tmp_path / "angry.json"
+    _write_state(path, label="angry")
+    tracker = EmotionStateTracker(path, decay_half_life_seconds=10.0)
+    previous_magnitude = max(abs(value) for value in EMOTION_TO_VAD["angry"])
+
+    for timestamp in (10.0, 20.0, 30.0):
+        state = tracker.decay(now=timestamp)
+        magnitude = max(
+            abs(state.valence),
+            abs(state.arousal),
+            abs(state.dominance),
+        )
+        assert magnitude < previous_magnitude
+        assert math.sqrt(
+            state.valence**2 + state.arousal**2 + state.dominance**2
+        ) > NEUTRAL_VAD_NORM_THRESHOLD
+        assert state.label == "angry"
+        previous_magnitude = magnitude
+
+    neutral = tracker.decay(now=40.0)
+    assert math.sqrt(
+        neutral.valence**2 + neutral.arousal**2 + neutral.dominance**2
+    ) <= NEUTRAL_VAD_NORM_THRESHOLD
+    assert neutral.label == "neutral"
+
+
+def test_unknown_decay_never_creates_specific_emotion(tmp_path) -> None:
+    path = tmp_path / "unknown.json"
+    _write_state(
+        path,
+        label="unknown",
+        vad=(-0.6, 0.7, 0.5),
+    )
+    tracker = EmotionStateTracker(path, decay_half_life_seconds=10.0)
+
+    state = tracker.decay(now=10.0)
+
+    assert state.label == "neutral"
+    assert state.label not in {
+        "happy",
+        "sad",
+        "angry",
+        "fear",
+        "surprise",
+        "disgust",
+        "tired",
+        "excited",
+    }
+
+
+def test_decay_persists_label_and_vad_for_reload(tmp_path) -> None:
+    path = tmp_path / "excited.json"
+    _write_state(path, label="excited")
+    tracker = EmotionStateTracker(path, decay_half_life_seconds=10.0)
+
+    decayed = tracker.decay(now=10.0)
+    reloaded = EmotionStateTracker(path, decay_half_life_seconds=10.0).state
+
+    assert reloaded.to_dict() == decayed.to_dict()
+    assert reloaded.label == "excited"
+
+
+def test_update_with_new_evidence_can_change_preserved_label(tmp_path) -> None:
+    path = tmp_path / "emotion.json"
+    _write_state(path, label="angry")
+    tracker = EmotionStateTracker(
+        path,
+        alpha=1.0,
+        decay_half_life_seconds=10.0,
+        max_step=2.0,
+    )
+
+    decayed = tracker.decay(now=10.0)
+    assert decayed.label == "angry"
+
+    updated = tracker.update(_emotion("happy"), now=10.0)
+    assert updated.label == "happy"
 
 
 def test_repeated_decay_uses_previous_decay_timestamp(tmp_path) -> None:
