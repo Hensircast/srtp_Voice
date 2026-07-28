@@ -5,9 +5,10 @@ import warnings
 from pathlib import Path
 from typing import Any, Protocol
 
-from .audio_io import read_wav_pcm16_mono
 from .config import AppConfig
-from .types import EmotionResult
+from .emotion_fusion import fuse_emotion
+from .prosody import extract_prosody_features
+from .types import EmotionResult, FusedEmotionResult, ProsodyFeatures
 
 
 SER_LABELS = frozenset(
@@ -128,10 +129,6 @@ def _extract_sensevoice_label(result: object) -> str:
     return label
 
 
-def _clamp01(value: float) -> float:
-    return max(0.0, min(1.0, float(value)))
-
-
 class SERBackend(Protocol):
     def predict(self, wav_path: Path) -> EmotionResult:
         ...
@@ -145,48 +142,27 @@ class SERBackendError(RuntimeError):
 
 
 class HeuristicSERBackend:
-    """Lightweight RMS/ZCR backend used by default and as an explicit fallback."""
+    """Lightweight prosody backend used by default and as an explicit fallback."""
 
     def predict(self, wav_path: Path) -> EmotionResult:
         path = Path(wav_path)
-        if not path.is_file():
-            raise FileNotFoundError(f"SER audio file does not exist: {path}")
+        features = extract_prosody_features(path)
+        return self.predict_from_prosody(features)
 
-        sr, samples = read_wav_pcm16_mono(path)
-        if not samples:
-            return EmotionResult(
-                label="neutral",
-                intensity=0.30,
-                confidence=0.30,
-                features={"rms": 0.0, "zcr": 0.0, "duration": 0.0},
-            )
-
-        duration = len(samples) / max(sr, 1)
-        rms = (sum(s * s for s in samples) / len(samples)) ** 0.5 / 32768.0
-        zc = sum(1 for a, b in zip(samples, samples[1:]) if (a >= 0) != (b >= 0))
-        zcr = zc / max(len(samples) - 1, 1)
-
-        # Acoustic statistics cannot reliably separate anger from excitement or
-        # tiredness from sadness, so the heuristic emits conservative single labels.
-        if rms > 0.12 and zcr > 0.08:
-            label = "excited"
-            intensity = 0.55 + rms * 2.5
-            confidence = 0.45
-        elif rms < 0.025:
-            label = "tired"
-            intensity = 0.45
-            confidence = 0.40
-        else:
-            label = "neutral"
-            intensity = 0.35
-            confidence = 0.50
-
-        return EmotionResult(
-            label=label,
-            intensity=_clamp01(intensity),
-            confidence=_clamp01(confidence),
-            features={"rms": float(rms), "zcr": float(zcr), "duration": float(duration)},
+    def predict_from_prosody(
+        self,
+        features: ProsodyFeatures,
+        *,
+        source: str = "heuristic",
+        is_fallback: bool = False,
+    ) -> EmotionResult:
+        fused = fuse_emotion(
+            EmotionResult("unknown", 0.0, 0.0, {}),
+            features,
+            source=source,
+            is_fallback=is_fallback,
         )
+        return fused.emotion
 
 
 class SenseVoiceSERBackend:
@@ -285,6 +261,7 @@ class SpeechEmotionRecognizer:
         self.configured_backend_name = backend_name
         self.backend_name = backend_name
         self._fallback = HeuristicSERBackend()
+        self.last_fused_result: FusedEmotionResult | None = None
 
         if backend_name == "heuristic":
             self.backend: SERBackend = self._fallback
@@ -319,8 +296,25 @@ class SpeechEmotionRecognizer:
             self.backend_name = "heuristic"
 
     def predict(self, wav_path: Path) -> EmotionResult:
+        path = Path(wav_path)
+        prosody = extract_prosody_features(path)
+        is_active_fallback = (
+            self.configured_backend_name == "sensevoice"
+            and self.backend_name == "heuristic"
+        )
+
+        if isinstance(self.backend, HeuristicSERBackend):
+            source = "fallback" if is_active_fallback else "heuristic"
+            self.last_fused_result = fuse_emotion(
+                EmotionResult("unknown", 0.0, 0.0, {}),
+                prosody,
+                source=source,
+                is_fallback=is_active_fallback,
+            )
+            return self.last_fused_result.emotion
+
         try:
-            result = self.backend.predict(Path(wav_path))
+            result = self.backend.predict(path)
         except SERBackendError as exc:
             if self.backend_name != "sensevoice" or not self.cfg.ser_fallback_to_heuristic:
                 raise RuntimeError(
@@ -333,11 +327,24 @@ class SpeechEmotionRecognizer:
                 RuntimeWarning,
                 stacklevel=2,
             )
-            result = self._fallback.predict(Path(wav_path))
+            self.last_fused_result = fuse_emotion(
+                EmotionResult("unknown", 0.0, 0.0, {}),
+                prosody,
+                source="fallback",
+                is_fallback=True,
+            )
+            return self.last_fused_result.emotion
 
-        return EmotionResult(
+        normalized = EmotionResult(
             label=normalize_emotion_label(result.label),
-            intensity=_clamp01(result.intensity),
-            confidence=_clamp01(result.confidence),
+            intensity=result.intensity,
+            confidence=result.confidence,
             features=result.features,
         )
+        self.last_fused_result = fuse_emotion(
+            normalized,
+            prosody,
+            source=self.backend_name,
+            is_fallback=False,
+        )
+        return self.last_fused_result.emotion

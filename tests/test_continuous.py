@@ -51,6 +51,10 @@ def _run_vad_main(
         "smoother_init": 0,
         "memory_init": 0,
         "record": 0,
+        "ser_results": [],
+        "llm_emotions": [],
+        "memory_states": [],
+        "serial_packets": [],
     }
     remaining_actions = list(record_actions)
     remaining_texts = list(asr_texts)
@@ -67,9 +71,14 @@ def _run_vad_main(
 
         def predict(self, path):
             counters["ser_predict"] += 1
-            return EmotionResult(
-                label="neutral", intensity=0.5, confidence=0.5, features={}
+            result = EmotionResult(
+                label="neutral",
+                intensity=0.4,
+                confidence=0.7,
+                features={"fusion_evidence_strength": 0.7},
             )
+            counters["ser_results"].append(result)
+            return result
 
     class FakeASR:
         def __init__(self, received_cfg):
@@ -87,6 +96,7 @@ def _run_vad_main(
 
         def generate(self, user_text, emotion, history):
             counters["generate"] += 1
+            counters["llm_emotions"].append(emotion)
             return StrategyResult(reply_text=f"reply: {user_text}", action={})
 
     class FakeTTS:
@@ -108,7 +118,7 @@ def _run_vad_main(
             return {"label": self.label}
 
     class FakeSmoother:
-        def __init__(self, path, alpha):
+        def __init__(self, path, alpha, **kwargs):
             counters["smoother_init"] += 1
 
         def update(self, emotion):
@@ -122,6 +132,7 @@ def _run_vad_main(
             return []
 
         def append(self, state):
+            counters["memory_states"].append(state)
             return None
 
     def fake_record(path, cfg):
@@ -144,7 +155,11 @@ def _run_vad_main(
     monkeypatch.setattr(main_module, "record_until_silence", fake_record)
     monkeypatch.setattr(main_module, "build_energy_lip_sync", lambda path: {"frames": []})
     monkeypatch.setattr(main_module, "build_serial_packet", lambda action, lip_sync: {"ok": True})
-    monkeypatch.setattr(main_module, "save_serial_packet", lambda packet, path: None)
+    monkeypatch.setattr(
+        main_module,
+        "save_serial_packet",
+        lambda packet, path: counters["serial_packets"].append(packet),
+    )
 
     main_module.main()
 
@@ -189,10 +204,19 @@ def test_default_vad_runs_one_turn(monkeypatch, tmp_path, capsys) -> None:
     assert counters["record"] == 1
     assert counters["ser_predict"] == 1
     assert counters["generate"] == 1
+    assert counters["llm_emotions"][0] is counters["ser_results"][0]
+    assert counters["memory_states"][0].emotion is counters["ser_results"][0]
+    assert json.loads(json.dumps(counters["memory_states"][0].to_dict()))
+    assert json.loads(json.dumps(counters["serial_packets"][0]))
+    action = json.loads((tmp_path / "last_action.json").read_text(encoding="utf-8"))
+    assert set(action) == {"reply_text", "action"}
+    assert action["action"]["emotion_state"]["label"] == "neutral"
     assert state["stage"] == "Idle"
     output = capsys.readouterr().out
     assert "[TURN 1] 开始监听" in output
     assert "[TURN 2]" not in output
+    assert "instant/fused_emotion=neutral" in output
+    assert "smoothed_emotion_state=label=neutral" in output
 
 
 def test_continuous_vad_reuses_runtime_until_keyboard_interrupt(

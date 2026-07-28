@@ -18,7 +18,7 @@ from srtp_voice.ser import (
     SpeechEmotionRecognizer,
     normalize_emotion_label,
 )
-from srtp_voice.types import EmotionResult
+from srtp_voice.types import EmotionResult, ProsodyFeatures
 
 
 def _write_wav(path: Path, samples: list[int], sample_rate: int = 16000) -> Path:
@@ -100,15 +100,23 @@ def test_heuristic_empty_and_normal_audio(tmp_path) -> None:
     normal = backend.predict(_write_wav(tmp_path / "normal.wav", [2000] * 320))
 
     assert empty.label == "neutral"
-    assert empty.features == {"rms": 0.0, "zcr": 0.0, "duration": 0.0}
+    assert empty.features["rms_mean"] == 0.0
+    assert empty.features["duration_seconds"] == 0.0
+    assert empty.features["fusion_evidence_strength"] <= 0.55
     assert normal.label == "neutral"
-    assert normal.features["rms"] > 0
+    assert normal.features["rms_mean"] > 0
 
 
 def test_heuristic_uses_single_normalized_labels(tmp_path) -> None:
     backend = HeuristicSERBackend()
     excited = backend.predict(
-        _write_wav(tmp_path / "excited.wav", [12000, -12000] * 160)
+        _write_wav(
+            tmp_path / "excited.wav",
+            [12000, -12000] * 400
+            + [0] * 800
+            + [12000, -12000] * 400
+            + [0] * 800,
+        )
     )
     tired = backend.predict(_write_wav(tmp_path / "tired.wav", [100] * 320))
 
@@ -213,6 +221,10 @@ def test_sensevoice_warmup_failure_switches_to_heuristic(monkeypatch, tmp_path) 
     recognizer.warmup()
 
     assert result.label == "neutral"
+    assert recognizer.last_fused_result is not None
+    assert recognizer.last_fused_result.evidence[0].source == "fallback"
+    assert recognizer.last_fused_result.evidence[0].is_fallback is True
+    assert result.confidence <= 0.55
     assert calls == {"warmup": 1, "predict": 0}
 
 
@@ -294,9 +306,13 @@ def test_sensevoice_common_output_shapes(monkeypatch, tmp_path, result, expected
     _install_fake_funasr(monkeypatch, FakeAutoModel)
     emotion = SpeechEmotionRecognizer(_sensevoice_cfg(model_path)).predict(wav_path)
     assert emotion.label == expected
-    assert emotion.intensity == 0.5
-    assert emotion.confidence == 0.5
-    assert emotion.features == {}
+    assert 0.0 <= emotion.intensity <= 1.0
+    assert 0.0 <= emotion.confidence <= 1.0
+    assert emotion.features["duration_seconds"] > 0.0
+    assert "fusion_evidence_strength" in emotion.features
+    assert emotion.confidence == emotion.features["fusion_evidence_strength"]
+    assert emotion.intensity != 0.5
+    assert emotion.confidence != 0.5
 
 
 @pytest.mark.parametrize(
@@ -359,11 +375,14 @@ def test_sensevoice_ignores_non_emotion_tokens(monkeypatch, tmp_path) -> None:
             ]
 
     _install_fake_funasr(monkeypatch, NoEmotionModel)
-    result = SpeechEmotionRecognizer(_sensevoice_cfg(model_path)).predict(wav_path)
+    recognizer = SpeechEmotionRecognizer(_sensevoice_cfg(model_path))
+    result = recognizer.predict(wav_path)
 
-    assert result.label == "unknown"
-    assert result.intensity == 0.5
-    assert result.confidence == 0.5
+    assert result.label == "neutral"
+    assert recognizer.last_fused_result is not None
+    assert recognizer.last_fused_result.evidence[0].label == "unknown"
+    assert 0.0 <= result.intensity <= 1.0
+    assert 0.0 <= result.confidence <= 1.0
 
 
 def test_sensevoice_missing_dependency_is_clear(monkeypatch, tmp_path) -> None:
@@ -454,7 +473,10 @@ def test_unknown_ser_backend_is_explicit(backend) -> None:
 
 
 def test_result_bounds_and_label_are_normalized(tmp_path) -> None:
-    recognizer = SpeechEmotionRecognizer(AppConfig(ser_backend="heuristic"))
+    recognizer = SpeechEmotionRecognizer(
+        AppConfig(ser_backend="sensevoice", ser_fallback_to_heuristic=False)
+    )
+    wav_path = _write_wav(tmp_path / "input.wav", [1000] * 160)
 
     class OutOfRangeBackend:
         def predict(self, wav_path):
@@ -463,10 +485,106 @@ def test_result_bounds_and_label_are_normalized(tmp_path) -> None:
             )
 
     recognizer.backend = OutOfRangeBackend()
-    result = recognizer.predict(tmp_path / "unused.wav")
+    result = recognizer.predict(wav_path)
     assert result.label == "angry"
-    assert result.intensity == 1.0
-    assert result.confidence == 0.0
+    assert 0.0 <= result.intensity <= 1.0
+    assert 0.0 <= result.confidence <= 1.0
+
+
+def test_recognizer_extracts_prosody_once_per_wav(monkeypatch, tmp_path) -> None:
+    import srtp_voice.ser as ser_module
+
+    recognizer = SpeechEmotionRecognizer(
+        AppConfig(ser_backend="sensevoice", ser_fallback_to_heuristic=False)
+    )
+    calls = []
+
+    class FakeBackend:
+        def predict(self, wav_path):
+            return EmotionResult("happy", 0.5, 0.5, {})
+
+    recognizer.backend = FakeBackend()
+    monkeypatch.setattr(
+        ser_module,
+        "extract_prosody_features",
+        lambda path: calls.append(Path(path)) or ProsodyFeatures(),
+    )
+
+    result = recognizer.predict(tmp_path / "input.wav")
+
+    assert result.label == "happy"
+    assert calls == [tmp_path / "input.wav"]
+
+
+def test_sensevoice_same_label_varies_with_audio_prosody(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    model_path = tmp_path / "SenseVoiceSmall"
+    model_path.mkdir()
+    weak_path = _write_wav(tmp_path / "weak.wav", [100] * 1600)
+    strong_path = _write_wav(
+        tmp_path / "strong.wav",
+        [10000, -10000] * 800,
+    )
+
+    class SameLabelModel:
+        def __init__(self, **kwargs):
+            pass
+
+        def generate(self, **kwargs):
+            return [{"text": "<|zh|><|HAPPY|><|Speech|>测试"}]
+
+    _install_fake_funasr(monkeypatch, SameLabelModel)
+    recognizer = SpeechEmotionRecognizer(_sensevoice_cfg(model_path))
+
+    weak = recognizer.predict(weak_path)
+    strong = recognizer.predict(strong_path)
+
+    assert weak.label == strong.label == "happy"
+    assert strong.intensity > weak.intensity
+    assert strong.confidence > weak.confidence
+
+
+def test_prediction_fallback_reuses_prosody_and_preserves_backend_name(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import srtp_voice.ser as ser_module
+
+    recognizer = SpeechEmotionRecognizer(
+        AppConfig(
+            ser_backend="sensevoice",
+            ser_fallback_to_heuristic=True,
+        )
+    )
+    calls = []
+
+    class FailingBackend:
+        def predict(self, wav_path):
+            cause = TimeoutError("fake inference failure")
+            raise SERBackendError("inference", str(cause), cause) from cause
+
+    recognizer.backend = FailingBackend()
+    monkeypatch.setattr(
+        ser_module,
+        "extract_prosody_features",
+        lambda path: calls.append(Path(path)) or ProsodyFeatures(),
+    )
+
+    with pytest.warns(
+        RuntimeWarning,
+        match="inference.*TimeoutError.*falling back to heuristic",
+    ):
+        result = recognizer.predict(tmp_path / "input.wav")
+
+    assert result.label == "neutral"
+    assert calls == [tmp_path / "input.wav"]
+    assert recognizer.configured_backend_name == "sensevoice"
+    assert recognizer.backend_name == "sensevoice"
+    assert recognizer.last_fused_result is not None
+    assert recognizer.last_fused_result.evidence[0].source == "fallback"
+    assert recognizer.last_fused_result.evidence[0].is_fallback is True
 
 
 def test_main_constructs_ser_with_config() -> None:

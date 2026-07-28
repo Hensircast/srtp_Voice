@@ -11,6 +11,9 @@ class AudioChunk:
     channels: int = 1
     timestamp_ms: int = 0
     is_final: bool = False
+    session_id: str = ""
+    turn_id: str = ""
+    sequence_id: int = 0
 
 
 @dataclass
@@ -18,6 +21,9 @@ class TextChunk:
     text: str
     is_final: bool = False
     timestamp_ms: int = 0
+    session_id: str = ""
+    turn_id: str = ""
+    sequence_id: int = 0
 
 
 class AudioInputStream(Protocol):

@@ -116,7 +116,7 @@ def _patch_main_success(monkeypatch, tmp_path, args, cfg, asr_cls):
             return EmotionResult(label="neutral", intensity=0.35, confidence=0.5, features={})
 
     class FakeSmoother:
-        def __init__(self, path, alpha):
+        def __init__(self, path, alpha, **kwargs):
             pass
 
         def update(self, emotion):
@@ -444,7 +444,7 @@ def test_main_file_empty_asr_returns_idle_without_llm_tts(monkeypatch, tmp_path)
             return EmotionResult(label="neutral", intensity=0.35, confidence=0.5, features={})
 
     class FakeSmoother:
-        def __init__(self, path, alpha):
+        def __init__(self, path, alpha, **kwargs):
             pass
 
         def update(self, emotion):
