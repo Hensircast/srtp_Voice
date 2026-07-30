@@ -11,7 +11,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from srtp_voice.config import AppConfig
-from srtp_voice.llm import LLMResponseError, OLLAMA_STRATEGY_SCHEMA, StrategyGenerator
+from srtp_voice.llm import (
+    LLMResponseError,
+    OLLAMA_STRATEGY_SCHEMA,
+    StrategyGenerator,
+    _is_echo_only_reply,
+)
 from srtp_voice.memory import JsonMemory
 from srtp_voice.types import EmotionResult, PipelineState
 
@@ -406,6 +411,366 @@ def test_ollama_native_payload() -> None:
     dialogue_text = json.dumps(messages[1:], ensure_ascii=False)
     assert_true("history no action", "action" not in dialogue_text)
     assert_true("ollama response parse", result.reply_text == "ok")
+
+
+def _strategy_content(reply_text: str, action=None) -> str:
+    return json.dumps(
+        {
+            "reply_text": reply_text,
+            "action": {} if action is None else action,
+        },
+        ensure_ascii=False,
+    )
+
+
+def _generate_with_fake_llm_contents(
+    backend: str,
+    user_text: str,
+    response_contents,
+    *,
+    fallback: bool = False,
+    history=None,
+    captured=None,
+):
+    import srtp_voice.llm as llm_module
+
+    class FakeResponse:
+        def __init__(self, data):
+            self._data = data
+            self.status_code = 200
+            self.text = ""
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._data
+
+    captured = captured if captured is not None else {}
+    captured["get_urls"] = []
+    captured["payloads"] = []
+    captured["post_urls"] = []
+    captured["timeouts"] = []
+    captured["data_provided"] = []
+    response_contents = list(response_contents)
+    missing_data = object()
+
+    def fake_get(url, timeout):
+        captured["get_urls"].append(url)
+        if backend == "ollama":
+            return FakeResponse({"models": [{"name": "qwen3:4b-instruct"}]})
+        return FakeResponse({"data": [{"id": "local-model"}]})
+
+    def fake_post(url, *, json=None, data=missing_data, timeout):
+        captured["post_urls"].append(url)
+        captured["payloads"].append(json)
+        captured["timeouts"].append(timeout)
+        captured["data_provided"].append(data is not missing_data)
+        response_index = len(captured["payloads"]) - 1
+        if response_index >= len(response_contents):
+            raise AssertionError("unexpected extra LLM request")
+        content = response_contents[response_index]
+        if backend == "ollama":
+            return FakeResponse({
+                "done_reason": "stop",
+                "message": {"content": content},
+            })
+        return FakeResponse({
+            "choices": [{"message": {"content": content}}],
+        })
+
+    old_requests = llm_module.requests
+    llm_module.requests = FakeRequests(fake_get, fake_post)
+    try:
+        cfg = AppConfig(
+            llm_backend=backend,
+            llm_model="qwen3:4b-instruct" if backend == "ollama" else "local-model",
+            llm_fallback_to_mock=fallback,
+        )
+        emotion = EmotionResult(label="neutral", intensity=0.35, confidence=0.5, features={})
+        result = StrategyGenerator(cfg).generate(
+            user_text,
+            emotion,
+            history=[] if history is None else history,
+        )
+    finally:
+        llm_module.requests = old_requests
+
+    return result, captured
+
+
+def test_system_prompt_and_current_request_boundaries() -> None:
+    generator = StrategyGenerator(AppConfig(llm_backend="mock"))
+    emotion = EmotionResult(label="happy", intensity=0.7, confidence=0.8, features={})
+    prompt = generator._system_prompt()
+    messages = generator._build_messages(
+        "解释为什么天空是蓝色的。",
+        emotion,
+        history=[{"user_text": "历史问题", "reply_text": "历史回答"}],
+    )
+
+    assert_true("system prompt direct answer", "必须直接回答或处理当前用户请求" in prompt)
+    assert_true("system prompt actual answer", "提出问题时必须给出实际答案" in prompt)
+    assert_true("system prompt concrete recommendation", "请求推荐时必须提供具体推荐内容" in prompt)
+    assert_true("system prompt explanation", "请求解释时必须提供解释" in prompt)
+    assert_true("system prompt calculation", "请求计算时必须给出计算结果" in prompt)
+    assert_true("system prompt forbids unnecessary echo", "不得只复制或改写用户问题" in prompt)
+    assert_true("system prompt clarification", "应提出一个简短、具体的澄清问题" in prompt)
+    assert_true("emotion cannot replace answer", "不能覆盖任务内容或代替问题答案" in prompt)
+    assert_true("tts spoken reply", "自然、简洁的中文口语" in prompt)
+    assert_true("current request remains last user", messages[-1]["role"] == "user")
+    assert_true("current request tagged", "<user_request>\n解释为什么天空是蓝色的。\n</user_request>" in messages[-1]["content"])
+    assert_true("emotion tagged separately", "<speech_emotion>" in messages[-1]["content"])
+
+
+def test_ollama_utf8_uses_json_payload() -> None:
+    user_text = "可以推荐一些家常菜吗？"
+    reply_text = "可以试试番茄炒蛋、青椒肉丝和清炒时蔬。"
+    result, captured = _generate_with_fake_llm_contents(
+        "ollama",
+        user_text,
+        [_strategy_content(reply_text)],
+    )
+
+    payload = captured["payloads"][0]
+    current_message = payload["messages"][-1]["content"]
+    assert_true("utf8 payload is dict", isinstance(payload, dict))
+    assert_true("utf8 current message is string", isinstance(current_message, str))
+    assert_true("utf8 current request preserved", user_text in current_message)
+    assert_true("utf8 no bytes repr", "b'" not in current_message and "\\x" not in current_message)
+    assert_true("utf8 sent through json keyword", captured["data_provided"] == [False])
+    assert_true("utf8 response preserved", result.reply_text == reply_text)
+
+
+def test_echo_only_normalization_is_conservative() -> None:
+    assert_true(
+        "question punctuation echo",
+        _is_echo_only_reply("可以推荐一些家常菜吗?", "可以推荐一些家常菜吗？"),
+    )
+    assert_true(
+        "ordinary whitespace echo",
+        _is_echo_only_reply("可以 推荐一些 家常菜吗？", "可以推荐一些家常菜吗?"),
+    )
+    assert_true(
+        "answer containing question is not echo",
+        not _is_echo_only_reply("13加28", "13加28等于41。"),
+    )
+
+
+def test_normal_ollama_reply_requests_once() -> None:
+    first_content = _strategy_content(
+        "13加28等于41。",
+        {"expression": "happy", "gaze": "center"},
+    )
+    expected_action = StrategyGenerator.parse_strategy_content(first_content).action
+    result, captured = _generate_with_fake_llm_contents(
+        "ollama",
+        "13加28",
+        [first_content],
+    )
+    assert_true("normal reply used", result.reply_text == "13加28等于41。")
+    assert_true("normal reply one request", len(captured["payloads"]) == 1)
+    assert_true("normal reply first payload schema", captured["payloads"][0]["format"] == OLLAMA_STRATEGY_SCHEMA)
+    assert_true("normal reply first action", result.action == expected_action)
+
+
+def test_ollama_echo_retries_once_and_uses_second_reply() -> None:
+    user_text = "可以推荐一些家常菜吗?"
+    first_content = _strategy_content(
+        "可以推荐一些家常菜吗？",
+        {
+            "expression": "concerned",
+            "gaze": "left",
+            "blink": "slow",
+            "tts_style": {"speed": 0.9, "pitch": 0.1, "volume": 0.8},
+        },
+    )
+    expected_action = StrategyGenerator.parse_strategy_content(first_content).action
+    history = [
+        {
+            "user_text": "测试代号是 ZXQ-407-A9。",
+            "reply_text": "已记住 ZXQ-407-A9。",
+            "action": {"expression": "drop me"},
+        }
+    ]
+    result, captured = _generate_with_fake_llm_contents(
+        "ollama",
+        user_text,
+        [
+            first_content,
+            "可以试试番茄炒蛋、青椒肉丝和清炒时蔬。",
+        ],
+        history=history,
+    )
+
+    assert_true("echo retry final reply", result.reply_text.startswith("可以试试"))
+    assert_true("echo retry request count", len(captured["payloads"]) == 2)
+    first_payload = captured["payloads"][0]
+    retry_payload = captured["payloads"][1]
+    retry_messages = retry_payload["messages"]
+    assert_true("echo first payload keeps schema", first_payload["format"] == OLLAMA_STRATEGY_SCHEMA)
+    assert_true("echo retry removes format", "format" not in retry_payload)
+    assert_true("echo retry no response format", "response_format" not in retry_payload)
+    assert_true("echo retry adds correction", "上一次回复只复述了问题" in retry_messages[0]["content"])
+    assert_true(
+        "echo retry keeps current request last",
+        retry_messages[-1] == {"role": "user", "content": user_text},
+    )
+    assert_true("echo retry preserves history code", "ZXQ-407-A9" in json.dumps(retry_messages, ensure_ascii=False))
+    retry_text = json.dumps(retry_messages, ensure_ascii=False)
+    assert_true("echo retry omits emotion payload", "<speech_emotion>" not in retry_text and '"confidence"' not in retry_text)
+    assert_true(
+        "echo retry omits action fields",
+        all(
+            field not in retry_text
+            for field in [
+                "expression",
+                "gaze",
+                "blink",
+                "tts_style",
+                "servo_targets_placeholder",
+            ]
+        ),
+    )
+    assert_true("echo retry stream false", retry_payload["stream"] is False)
+    assert_true("echo retry same options", retry_payload["options"] == first_payload["options"])
+    assert_true("echo retry same timeout", captured["timeouts"][0] == captured["timeouts"][1])
+    assert_true("echo retry uses json keyword", captured["data_provided"] == [False, False])
+    assert_true("echo retry preserves first action", result.action == expected_action)
+
+
+def test_ollama_echo_repair_extracts_accidental_json_reply() -> None:
+    user_text = "可以推荐一些家常菜吗？"
+    first_content = _strategy_content(
+        user_text,
+        {"expression": "happy", "blink": "frequent"},
+    )
+    expected_action = StrategyGenerator.parse_strategy_content(first_content).action
+    repaired_content = json.dumps(
+        {"reply_text": "可以试试番茄炒蛋。"},
+        ensure_ascii=False,
+    )
+    result, captured = _generate_with_fake_llm_contents(
+        "ollama",
+        user_text,
+        [first_content, repaired_content],
+    )
+
+    assert_true("repair json request count", len(captured["payloads"]) == 2)
+    assert_true("repair json reply extracted", result.reply_text == "可以试试番茄炒蛋。")
+    assert_true("repair json not spoken whole", result.reply_text != repaired_content)
+    assert_true("repair json keeps first action", result.action == expected_action)
+
+
+def test_explicit_repeat_request_allows_same_reply() -> None:
+    user_text = "请原样重复：测试123"
+    result, captured = _generate_with_fake_llm_contents(
+        "ollama",
+        user_text,
+        [_strategy_content(user_text)],
+    )
+    assert_true("explicit repeat accepted", result.reply_text == user_text)
+    assert_true("explicit repeat no retry", len(captured["payloads"]) == 1)
+    assert_true("explicit original wording allowed", not _is_echo_only_reply("请原样说“你好”", "请原样说“你好”"))
+    assert_true("explicit paraphrase wording allowed", not _is_echo_only_reply("复述这句话", "复述这句话"))
+
+
+def test_two_ollama_echoes_raise_response_error() -> None:
+    user_text = "可以推荐一些家常菜吗?"
+    captured = {}
+    try:
+        _generate_with_fake_llm_contents(
+            "ollama",
+            user_text,
+            [
+                _strategy_content("可以推荐一些家常菜吗？"),
+                "可以推荐一些家常菜吗?",
+            ],
+            captured=captured,
+        )
+    except LLMResponseError as exc:
+        assert_true(
+            "double echo clear error",
+            str(exc) == "LLM returned an echo-only reply after one retry.",
+        )
+        assert_true("double echo only one retry", len(captured["payloads"]) == 2)
+        return
+    raise AssertionError("two echo-only replies should raise LLMResponseError")
+
+
+def test_empty_ollama_echo_repair_raises_response_error() -> None:
+    user_text = "可以推荐一些家常菜吗?"
+    captured = {}
+    try:
+        _generate_with_fake_llm_contents(
+            "ollama",
+            user_text,
+            [_strategy_content("可以推荐一些家常菜吗？"), "  \n"],
+            captured=captured,
+        )
+    except LLMResponseError as exc:
+        assert_true("empty repair clear error", "Ollama echo repair response content is empty" in str(exc))
+        assert_true("empty repair only one retry", len(captured["payloads"]) == 2)
+        return
+    raise AssertionError("empty echo repair should raise LLMResponseError")
+
+
+def test_echo_repair_rejects_markdown_and_empty_json() -> None:
+    for content, expected in [
+        ("```text\n实际回答\n```", "Markdown fencing"),
+        ("{}", "non-empty reply_text"),
+        ("……", "no speakable text"),
+    ]:
+        try:
+            StrategyGenerator._parse_echo_repair_content(content, "Ollama")
+        except LLMResponseError as exc:
+            assert_true(f"repair rejects {content!r}", expected in str(exc))
+        else:
+            raise AssertionError(f"repair content should be rejected: {content!r}")
+
+
+def test_two_ollama_echoes_can_fallback_to_mock() -> None:
+    user_text = "可以推荐一些家常菜吗?"
+    result, captured = _generate_with_fake_llm_contents(
+        "ollama",
+        user_text,
+        [
+            _strategy_content("可以推荐一些家常菜吗？"),
+            "可以推荐一些家常菜吗?",
+        ],
+        fallback=True,
+    )
+    assert_true("double echo fallback request count", len(captured["payloads"]) == 2)
+    assert_true("double echo fallback reply", bool(result.reply_text) and result.reply_text != user_text)
+
+
+def test_lmstudio_uses_same_echo_retry() -> None:
+    user_text = "请解释光合作用。"
+    first_content = _strategy_content(
+        "请解释光合作用。",
+        {"expression": "neutral", "gaze": "center"},
+    )
+    expected_action = StrategyGenerator.parse_strategy_content(first_content).action
+    result, captured = _generate_with_fake_llm_contents(
+        "lmstudio",
+        user_text,
+        [
+            first_content,
+            "光合作用是植物利用光能把水和二氧化碳转化为有机物的过程。",
+        ],
+    )
+    assert_true("lmstudio echo retry count", len(captured["payloads"]) == 2)
+    assert_true("lmstudio echo retry result", result.reply_text.startswith("光合作用是"))
+    assert_true("lmstudio first response format", captured["payloads"][0]["response_format"]["type"] == "json_schema")
+    assert_true("lmstudio repair removes response format", "response_format" not in captured["payloads"][1])
+    assert_true("lmstudio repair no ollama format", "format" not in captured["payloads"][1])
+    assert_true("lmstudio repair current user last", captured["payloads"][1]["messages"][-1]["content"] == user_text)
+    assert_true("lmstudio repair keeps action", result.action == expected_action)
+    assert_true(
+        "lmstudio repair keeps transport settings",
+        captured["payloads"][1]["temperature"] == captured["payloads"][0]["temperature"]
+        and captured["payloads"][1]["max_tokens"] == captured["payloads"][0]["max_tokens"],
+    )
 
 
 def _generate_ollama_with_urls(
@@ -1340,6 +1705,18 @@ def main() -> None:
     test_ollama_without_requests_fallback()
     test_default_model_name()
     test_ollama_native_payload()
+    test_system_prompt_and_current_request_boundaries()
+    test_ollama_utf8_uses_json_payload()
+    test_echo_only_normalization_is_conservative()
+    test_normal_ollama_reply_requests_once()
+    test_ollama_echo_retries_once_and_uses_second_reply()
+    test_ollama_echo_repair_extracts_accidental_json_reply()
+    test_explicit_repeat_request_allows_same_reply()
+    test_two_ollama_echoes_raise_response_error()
+    test_empty_ollama_echo_repair_raises_response_error()
+    test_echo_repair_rejects_markdown_and_empty_json()
+    test_two_ollama_echoes_can_fallback_to_mock()
+    test_lmstudio_uses_same_echo_retry()
     test_standard_ollama_chat_url_runs_tags_precheck()
     test_derived_remote_ollama_chat_url_runs_tags_precheck()
     test_custom_ollama_chat_url_skips_tags_precheck()
