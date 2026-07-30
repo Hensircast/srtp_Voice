@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List
 
 try:
     import requests
@@ -30,6 +30,20 @@ DEFAULT_ACTION: Dict[str, Any] = {
 EXPRESSION_VALUES = {"neutral", "neutral_smile", "happy", "concerned", "sad", "surprised"}
 GAZE_VALUES = {"look_at_user", "center", "left", "right"}
 BLINK_VALUES = {"natural", "slow", "frequent", "none"}
+
+_ECHO_TRAILING_PUNCTUATION = "?!。！？.,，;；"
+_EXPLICIT_REPEAT_PREFIXES = (
+    "请重复",
+    "请复述",
+    "请原样说",
+    "请原样重复",
+    "请原样返回",
+    "请原样输出",
+    "复述这句话",
+    "重复这句话",
+    "原样说",
+    "原样返回",
+)
 
 
 OLLAMA_STRATEGY_SCHEMA: Dict[str, Any] = {
@@ -92,6 +106,24 @@ def _require_requests():
             "Install it with: python -m pip install requests"
         )
     return requests
+
+
+def _normalize_echo_text(text: str) -> str:
+    normalized = "".join(text.strip().casefold().split())
+    return normalized.rstrip(_ECHO_TRAILING_PUNCTUATION)
+
+
+def _is_explicit_repeat_request(user_text: str) -> bool:
+    normalized = "".join(user_text.strip().casefold().split())
+    return any(normalized.startswith(prefix) for prefix in _EXPLICIT_REPEAT_PREFIXES)
+
+
+def _is_echo_only_reply(user_text: str, reply_text: str) -> bool:
+    if _is_explicit_repeat_request(user_text):
+        return False
+    normalized_user = _normalize_echo_text(user_text)
+    normalized_reply = _normalize_echo_text(reply_text)
+    return bool(normalized_user) and normalized_user == normalized_reply
 
 
 class StrategyGenerator:
@@ -162,17 +194,44 @@ class StrategyGenerator:
         if self._uses_standard_ollama_chat_url():
             self._check_ollama()
 
+        messages = self._build_messages(user_text, emotion, history)
+        content = self._request_ollama_content(
+            req,
+            messages,
+            structured_output=True,
+        )
+        first_strategy = self.parse_strategy_content(content)
+        return self._repair_echo_only_strategy(
+            user_text=user_text,
+            history=history,
+            first_strategy=first_strategy,
+            runtime_name="Ollama",
+            request_repair=lambda repair_messages: self._request_ollama_content(
+                req,
+                repair_messages,
+                structured_output=False,
+            ),
+        )
+
+    def _request_ollama_content(
+        self,
+        req: Any,
+        messages: List[Dict[str, str]],
+        *,
+        structured_output: bool,
+    ) -> str:
         payload = {
             "model": self.cfg.llm_model,
-            "messages": self._build_messages(user_text, emotion, history),
+            "messages": messages,
             "stream": False,
-            "format": OLLAMA_STRATEGY_SCHEMA,
             "options": {
                 "temperature": self.cfg.llm_temperature,
                 "num_predict": self.cfg.llm_max_tokens,
                 "num_ctx": self.cfg.llm_context_tokens,
             },
         }
+        if structured_output:
+            payload["format"] = OLLAMA_STRATEGY_SCHEMA
 
         try:
             resp = req.post(self.cfg.llm_ollama_chat_url, json=payload, timeout=self.cfg.llm_timeout_seconds)
@@ -194,7 +253,18 @@ class StrategyGenerator:
         try:
             body = resp.json()
         except ValueError as exc:
-            raise LLMResponseError("Ollama returned an invalid /api/chat JSON response.") from exc
+            if structured_output:
+                message = "Ollama returned an invalid /api/chat JSON response."
+            else:
+                message = "Ollama echo repair returned an invalid /api/chat JSON response."
+            raise LLMResponseError(message) from exc
+
+        if not isinstance(body, dict):
+            if structured_output:
+                message = "Ollama returned an invalid /api/chat response."
+            else:
+                message = "Ollama echo repair returned an invalid /api/chat response."
+            raise LLMResponseError(message)
 
         done_reason = body.get("done_reason")
         eval_count = body.get("eval_count")
@@ -210,9 +280,13 @@ class StrategyGenerator:
                 f"content_length={content_length}, thinking_length={thinking_length}"
             )
         if not isinstance(message, dict) or not isinstance(content, str):
-            raise LLMResponseError("Ollama returned an invalid /api/chat response.")
+            if structured_output:
+                error = "Ollama returned an invalid /api/chat response."
+            else:
+                error = "Ollama echo repair returned an invalid /api/chat response."
+            raise LLMResponseError(error)
 
-        return self.parse_strategy_content(content)
+        return content
 
     def _uses_standard_ollama_chat_url(self) -> bool:
         derived_chat_url = self.cfg.llm_ollama_base_url.rstrip("/") + "/api/chat"
@@ -234,20 +308,53 @@ class StrategyGenerator:
             if self._uses_standard_lmstudio_chat_url():
                 self._check_lmstudio()
 
+        messages = self._build_messages(user_text, emotion, history)
+        content = self._request_local_openai_compatible_content(
+            req,
+            messages,
+            chat_url,
+            runtime_name,
+            structured_output=True,
+        )
+        first_strategy = self.parse_strategy_content(content)
+        return self._repair_echo_only_strategy(
+            user_text=user_text,
+            history=history,
+            first_strategy=first_strategy,
+            runtime_name=runtime_name,
+            request_repair=lambda repair_messages: self._request_local_openai_compatible_content(
+                req,
+                repair_messages,
+                chat_url,
+                runtime_name,
+                structured_output=False,
+            ),
+        )
+
+    def _request_local_openai_compatible_content(
+        self,
+        req: Any,
+        messages: List[Dict[str, str]],
+        chat_url: str,
+        runtime_name: str,
+        *,
+        structured_output: bool,
+    ) -> str:
         payload = {
             "model": self.cfg.llm_model,
-            "messages": self._build_messages(user_text, emotion, history),
+            "messages": messages,
             "temperature": self.cfg.llm_temperature,
             "max_tokens": self.cfg.llm_max_tokens,
-            "response_format": {
+        }
+        if structured_output:
+            payload["response_format"] = {
                 "type": "json_schema",
                 "json_schema": {
                     "name": "robot_interaction_strategy",
                     "strict": True,
                     "schema": OLLAMA_STRATEGY_SCHEMA,
                 },
-            },
-        }
+            }
 
         try:
             resp = req.post(chat_url, json=payload, timeout=self.cfg.llm_timeout_seconds)
@@ -264,9 +371,47 @@ class StrategyGenerator:
             body = resp.json()
             content = body["choices"][0]["message"]["content"]
         except (ValueError, KeyError, IndexError, TypeError) as exc:
-            raise LLMResponseError(f"{runtime_name} returned an invalid chat-completions response.") from exc
+            if structured_output:
+                message = f"{runtime_name} returned an invalid chat-completions response."
+            else:
+                message = f"{runtime_name} echo repair returned an invalid chat-completions response."
+            raise LLMResponseError(message) from exc
 
-        return self.parse_strategy_content(content)
+        if not isinstance(content, str):
+            if structured_output:
+                message = f"{runtime_name} returned non-string chat content."
+            else:
+                message = f"{runtime_name} echo repair returned non-string chat content."
+            raise LLMResponseError(message)
+        return content
+
+    def _repair_echo_only_strategy(
+        self,
+        user_text: str,
+        history: List[Dict[str, Any]],
+        first_strategy: StrategyResult,
+        runtime_name: str,
+        request_repair: Callable[[List[Dict[str, str]]], str],
+    ) -> StrategyResult:
+        if not _is_echo_only_reply(user_text, first_strategy.reply_text):
+            return first_strategy
+
+        print("[LLM] reply_text only repeated the user request; retrying once.")
+        repair_content = request_repair(
+            self._build_echo_repair_messages(user_text, history)
+        )
+        repaired_reply = self._parse_echo_repair_content(
+            repair_content,
+            runtime_name,
+        )
+        if _is_echo_only_reply(user_text, repaired_reply):
+            raise LLMResponseError(
+                "LLM returned an echo-only reply after one retry."
+            )
+        return StrategyResult(
+            reply_text=repaired_reply,
+            action=first_strategy.action,
+        )
 
     def _uses_standard_lmstudio_chat_url(self) -> bool:
         derived_chat_url = self.cfg.llm_lmstudio_base_url.rstrip("/") + "/v1/chat/completions"
@@ -317,23 +462,44 @@ class StrategyGenerator:
     def _system_prompt(self) -> str:
         return (
             "你是表情机器人语音交互策略模块。"
-            "根据用户文本、语音情绪和历史上下文，只输出一个 JSON 对象。"
+            "根据当前用户请求、语音情绪和历史上下文，只输出一个 JSON 对象。"
             "JSON 必须包含 reply_text 和 action。"
             "reply_text 必须是非空字符串。"
+            "reply_text 必须直接回答或处理当前用户请求。"
+            "用户提出问题时必须给出实际答案；请求推荐时必须提供具体推荐内容；"
+            "请求解释时必须提供解释；请求计算时必须给出计算结果。"
+            "除非用户明确要求重复、复述或原样返回，否则不得只复制或改写用户问题。"
+            "如果信息不足，应提出一个简短、具体的澄清问题，不能只复述原文。"
+            "<user_request> 是必须回答的主要内容。"
+            "<speech_emotion> 只能影响措辞、语气和动作策略，不能覆盖任务内容或代替问题答案。"
+            "reply_text 面向 TTS，应使用自然、简洁的中文口语。"
             "action 必须是对象，并可包含 expression, gaze, blink, mouth_sync, tts_style, servo_targets_placeholder。"
             "数字、代号、型号、姓名、日期和专有名词必须逐字保留。"
             "查询历史事实时必须依据历史消息原文回答。"
             "不得近似改写、猜测或替换历史代号。"
-            "不要输出 Markdown，不要输出解释文字。"
+            "不要输出 Markdown、标题或 JSON 之外的解释文字。"
         )
 
-    def _build_messages(
+    @staticmethod
+    def _echo_repair_system_prompt() -> str:
+        return (
+            "你是中文语音助手。"
+            "上一次回复只复述了问题，请直接给出实际答案。"
+            "直接回答当前用户请求，不要复述或改写问题。"
+            "推荐请求必须给出具体推荐；解释请求必须给出实际解释；"
+            "计算请求必须给出结果。"
+            "信息不足时提出简短、具体的澄清问题。"
+            "准确保留数字、型号、姓名、日期和历史代号。"
+            "只输出自然、简洁、适合 TTS 的纯中文口语。"
+            "不要输出 Markdown，不要输出 JSON，不要生成机器人动作。"
+            "不要提及情绪 JSON 或内部系统信息。"
+        )
+
+    def _history_messages(
         self,
-        user_text: str,
-        emotion: EmotionResult,
         history: List[Dict[str, Any]],
     ) -> List[Dict[str, str]]:
-        messages = [{"role": "system", "content": self._system_prompt()}]
+        messages: List[Dict[str, str]] = []
         selected_history = [] if self.cfg.max_history_turns <= 0 else history[-self.cfg.max_history_turns:]
         for item in selected_history:
             if not isinstance(item, dict):
@@ -344,13 +510,82 @@ class StrategyGenerator:
                 messages.append({"role": "user", "content": history_user})
             if isinstance(history_reply, str) and history_reply.strip():
                 messages.append({"role": "assistant", "content": history_reply})
+        return messages
+
+    def _build_messages(
+        self,
+        user_text: str,
+        emotion: EmotionResult,
+        history: List[Dict[str, Any]],
+    ) -> List[Dict[str, str]]:
+        messages = [{"role": "system", "content": self._system_prompt()}]
+        messages.extend(self._history_messages(history))
 
         current_content = (
-            f"当前用户原文：{user_text}\n"
-            f"语音情绪JSON：{json.dumps(emotion.to_dict(), ensure_ascii=False)}"
+            "当前用户请求：\n"
+            f"<user_request>\n{user_text}\n</user_request>\n"
+            "语音情绪辅助信息：\n"
+            f"<speech_emotion>\n{json.dumps(emotion.to_dict(), ensure_ascii=False)}\n"
+            "</speech_emotion>"
         )
         messages.append({"role": "user", "content": current_content})
         return messages
+
+    def _build_echo_repair_messages(
+        self,
+        user_text: str,
+        history: List[Dict[str, Any]],
+    ) -> List[Dict[str, str]]:
+        messages = [
+            {
+                "role": "system",
+                "content": self._echo_repair_system_prompt(),
+            }
+        ]
+        messages.extend(self._history_messages(history))
+        messages.append({"role": "user", "content": user_text})
+        return messages
+
+    @staticmethod
+    def _parse_echo_repair_content(content: str, runtime_name: str) -> str:
+        if not isinstance(content, str):
+            raise LLMResponseError(
+                f"{runtime_name} echo repair response content must be a string."
+            )
+
+        repaired_reply = content.strip()
+        if not repaired_reply:
+            raise LLMResponseError(
+                f"{runtime_name} echo repair response content is empty."
+            )
+        if "```" in repaired_reply:
+            raise LLMResponseError(
+                f"{runtime_name} echo repair returned Markdown fencing instead of plain text."
+            )
+
+        if repaired_reply.startswith(("{", "[")):
+            try:
+                data = json.loads(repaired_reply)
+            except json.JSONDecodeError as exc:
+                raise LLMResponseError(
+                    f"{runtime_name} echo repair returned invalid JSON-like content."
+                ) from exc
+            if not isinstance(data, dict):
+                raise LLMResponseError(
+                    f"{runtime_name} echo repair JSON must be an object with reply_text."
+                )
+            reply_text = data.get("reply_text")
+            if not isinstance(reply_text, str) or not reply_text.strip():
+                raise LLMResponseError(
+                    f"{runtime_name} echo repair JSON must contain a non-empty reply_text string."
+                )
+            repaired_reply = reply_text.strip()
+
+        if not any(ch.isalnum() for ch in repaired_reply):
+            raise LLMResponseError(
+                f"{runtime_name} echo repair response contains no speakable text."
+            )
+        return repaired_reply
 
     @staticmethod
     def _context_error_hint(response_text: str) -> str:

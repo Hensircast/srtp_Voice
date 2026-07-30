@@ -86,6 +86,12 @@ def run_one_turn(
                 print("      未检测到有效语音，本轮结束，继续监听")
             else:
                 print("      未检测到有效语音，本轮结束")
+            decayed = smoother.decay()
+            print(
+                "      no_evidence_decay="
+                f"label={decayed.label}, V={decayed.valence:.2f}, "
+                f"A={decayed.arousal:.2f}, D={decayed.dominance:.2f}"
+            )
             fsm.set(DialogueStage.IDLE)
             save_fsm_state(fsm, state_file)
             return
@@ -109,17 +115,18 @@ def run_one_turn(
     print("[2/9] 进入 Thinking：SER / ASR / LLM")
     fsm.set(DialogueStage.THINKING)
 
-    print("[3/9] 语音情绪识别 SER")
+    print("[3/9] SER + 韵律情绪融合")
     emotion = ser.predict(turn_audio)
     print(
-        f"      instant_emotion={emotion.label}, "
-        f"intensity={emotion.intensity:.2f}, confidence={emotion.confidence:.2f}"
+        f"      instant/fused_emotion={emotion.label}, "
+        f"intensity={emotion.intensity:.2f}, "
+        f"evidence_strength={emotion.confidence:.2f}"
     )
 
-    print("[4/9] 情感状态平滑：连续 VAD 空间占位")
+    print("[4/9] 情感状态平滑：EMA + 时间衰减")
     smoothed = smoother.update(emotion)
     print(
-        "      smoothed="
+        "      smoothed_emotion_state="
         f"label={smoothed.label}, V={smoothed.valence:.2f}, "
         f"A={smoothed.arousal:.2f}, D={smoothed.dominance:.2f}"
     )
@@ -189,7 +196,7 @@ def run_one_turn(
         reply_audio=str(reply_audio),
     )
     memory.append(state)
-    print("完成：VAD/录音 -> SER -> 情绪平滑 -> ASR -> LLM策略 -> TTS -> 短时能量唇动 -> 动作策略 JSON")
+    print("完成：VAD/录音 -> SER+韵律融合 -> 情绪平滑 -> ASR -> LLM策略 -> TTS -> 短时能量唇动 -> 动作策略 JSON")
 
 
 def main() -> None:
@@ -235,7 +242,12 @@ def main() -> None:
         asr = ASRAdapter(cfg) if needs_asr else None
         generator = StrategyGenerator(cfg)
         tts = TTSAdapter(cfg)
-        smoother = EmotionStateSmoother(cfg.state_file, alpha=cfg.emotion_smooth_alpha)
+        smoother = EmotionStateSmoother(
+            cfg.state_file,
+            alpha=cfg.emotion_smooth_alpha,
+            decay_half_life_seconds=cfg.emotion_decay_half_life_seconds,
+            max_step=cfg.emotion_max_step,
+        )
         memory = JsonMemory(cfg.memory_file, max_turns=cfg.max_history_turns)
 
         turn_number = 1

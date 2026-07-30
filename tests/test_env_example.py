@@ -62,3 +62,15 @@ def test_inactive_serial_settings_are_not_exposed() -> None:
     assert not any(line.startswith("SERIAL_PORT=") for line in active)
     assert not any(line.startswith("SERIAL_BAUDRATE=") for line in active)
     assert not any(line.startswith("SERIAL_ENABLE=") for line in active)
+
+
+def test_env_example_exposes_implemented_emotion_state_controls() -> None:
+    lines = [
+        line.strip()
+        for line in Path(".env.example").read_text(encoding="utf-8").splitlines()
+    ]
+    active = {line for line in lines if line and not line.startswith("#")}
+
+    assert "EMOTION_SMOOTH_ALPHA=0.35" in active
+    assert "EMOTION_DECAY_HALF_LIFE_SECONDS=120" in active
+    assert "EMOTION_MAX_STEP=0.25" in active

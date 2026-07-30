@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import platform
 from dataclasses import dataclass, field
@@ -24,6 +25,21 @@ def env_text(name: str, default: str | None = None) -> str | None:
         return default
     stripped = value.strip()
     return stripped if stripped else default
+
+
+def env_bounded_float(
+    name: str,
+    default: float,
+    minimum: float,
+    maximum: float,
+) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    if not math.isfinite(value):
+        value = default
+    return max(minimum, min(maximum, value))
 
 
 def derive_url(base_url: str, endpoint: str) -> str:
@@ -116,6 +132,8 @@ class AppConfig:
 
     # 情绪平滑使用 EMA。
     emotion_smooth_alpha: float = 0.35
+    emotion_decay_half_life_seconds: float = 120.0
+    emotion_max_step: float = 0.25
 
     @classmethod
     def from_env(cls) -> "AppConfig":
@@ -185,5 +203,22 @@ class AppConfig:
             ser_device=env_text("SER_DEVICE", "cpu"),
             ser_language=env_text("SER_LANGUAGE", "zh"),
             ser_fallback_to_heuristic=env_bool("SER_FALLBACK_TO_HEURISTIC", True),
-            emotion_smooth_alpha=float(os.getenv("EMOTION_SMOOTH_ALPHA", "0.35")),
+            emotion_smooth_alpha=env_bounded_float(
+                "EMOTION_SMOOTH_ALPHA",
+                0.35,
+                0.0,
+                1.0,
+            ),
+            emotion_decay_half_life_seconds=env_bounded_float(
+                "EMOTION_DECAY_HALF_LIFE_SECONDS",
+                120.0,
+                1.0,
+                86400.0,
+            ),
+            emotion_max_step=env_bounded_float(
+                "EMOTION_MAX_STEP",
+                0.25,
+                0.001,
+                2.0,
+            ),
         )

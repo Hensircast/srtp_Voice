@@ -116,10 +116,19 @@ def _patch_main_success(monkeypatch, tmp_path, args, cfg, asr_cls):
             return EmotionResult(label="neutral", intensity=0.35, confidence=0.5, features={})
 
     class FakeSmoother:
-        def __init__(self, path, alpha):
+        def __init__(self, path, alpha, **kwargs):
             pass
 
         def update(self, emotion):
+            return type("Smoothed", (), {
+                "label": "neutral",
+                "valence": 0.0,
+                "arousal": 0.0,
+                "dominance": 0.0,
+                "to_dict": lambda self: {"label": "neutral"},
+            })()
+
+        def decay(self):
             return type("Smoothed", (), {
                 "label": "neutral",
                 "valence": 0.0,
@@ -369,16 +378,35 @@ def test_vad_debug_default_and_env_parsing(monkeypatch) -> None:
 def test_main_vad_no_speech_returns_idle_without_asr_llm_tts(monkeypatch, tmp_path) -> None:
     import main as main_module
 
-    cfg = AppConfig(output_dir=tmp_path, state_file=tmp_path / "emotion_state.json")
+    cfg = AppConfig(
+        output_dir=tmp_path,
+        memory_file=tmp_path / "memory.json",
+        state_file=tmp_path / "emotion_state.json",
+    )
     args = argparse.Namespace(
         mode="vad",
         audio="",
         text="",
         record_seconds=5.0,
-        no_play=True,
+        no_play=False,
     )
     inits = {"asr": 0, "llm": 0, "tts": 0}
-    calls = {"asr": 0, "llm": 0, "tts": 0}
+    calls = {
+        "ser": 0,
+        "asr": 0,
+        "llm": 0,
+        "tts": 0,
+        "play": 0,
+        "decay": 0,
+    }
+
+    class FailSER:
+        def __init__(self, cfg):
+            pass
+
+        def predict(self, path):
+            calls["ser"] += 1
+            raise AssertionError("SER predict should not be called")
 
     class FailASR:
         def __init__(self, cfg):
@@ -407,9 +435,23 @@ def test_main_vad_no_speech_returns_idle_without_asr_llm_tts(monkeypatch, tmp_pa
     def raise_no_speech(path, cfg):
         raise NoSpeechDetectedError("no speech")
 
+    def fail_play(path):
+        calls["play"] += 1
+        raise AssertionError("audio playback should not be called")
+
+    real_smoother = main_module.EmotionStateSmoother
+
+    class TrackingSmoother(real_smoother):
+        def decay(self, now=None):
+            calls["decay"] += 1
+            return super().decay(now=now)
+
     monkeypatch.setattr(main_module, "parse_args", lambda: args)
     monkeypatch.setattr(main_module.AppConfig, "from_env", classmethod(lambda cls: cfg))
     monkeypatch.setattr(main_module, "record_until_silence", raise_no_speech)
+    monkeypatch.setattr(main_module, "play_wav", fail_play)
+    monkeypatch.setattr(main_module, "SpeechEmotionRecognizer", FailSER)
+    monkeypatch.setattr(main_module, "EmotionStateSmoother", TrackingSmoother)
     monkeypatch.setattr(main_module, "ASRAdapter", FailASR)
     monkeypatch.setattr(main_module, "StrategyGenerator", FailLLM)
     monkeypatch.setattr(main_module, "TTSAdapter", FailTTS)
@@ -417,9 +459,25 @@ def test_main_vad_no_speech_returns_idle_without_asr_llm_tts(monkeypatch, tmp_pa
     main_module.main()
 
     state = json.loads((tmp_path / "last_state.json").read_text(encoding="utf-8"))
+    emotion_state = json.loads(
+        (tmp_path / "emotion_state.json").read_text(encoding="utf-8")
+    )
     assert state["stage"] == "Idle"
     assert inits == {"asr": 1, "llm": 1, "tts": 1}
-    assert calls == {"asr": 0, "llm": 0, "tts": 0}
+    assert calls == {
+        "ser": 0,
+        "asr": 0,
+        "llm": 0,
+        "tts": 0,
+        "play": 0,
+        "decay": 1,
+    }
+    assert emotion_state["label"] == "neutral"
+    assert emotion_state["updated_at"] is not None
+    assert not (tmp_path / "memory.json").exists()
+    assert not (tmp_path / "last_action.json").exists()
+    assert not (tmp_path / "serial_packet.json").exists()
+    assert not (tmp_path / "reply.wav").exists()
 
 
 def test_main_file_empty_asr_returns_idle_without_llm_tts(monkeypatch, tmp_path) -> None:
@@ -444,7 +502,7 @@ def test_main_file_empty_asr_returns_idle_without_llm_tts(monkeypatch, tmp_path)
             return EmotionResult(label="neutral", intensity=0.35, confidence=0.5, features={})
 
     class FakeSmoother:
-        def __init__(self, path, alpha):
+        def __init__(self, path, alpha, **kwargs):
             pass
 
         def update(self, emotion):
@@ -455,6 +513,9 @@ def test_main_file_empty_asr_returns_idle_without_llm_tts(monkeypatch, tmp_path)
                 "dominance": 0.0,
                 "to_dict": lambda self: {"label": "neutral"},
             })()
+
+        def decay(self):
+            raise AssertionError("file ASR-empty path should not decay VAD state")
 
     class EmptyASR:
         def __init__(self, cfg):

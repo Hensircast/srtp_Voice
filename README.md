@@ -1,14 +1,14 @@
-# SRTP 表情机器人语音交互项目
+# SRTP 表情机器人语音交互项目（V1.6）
 
 ## 1. 项目定位
 
-本项目是回合式机器人头部语音交互程序。它在单个 Python 进程中组织音频采集、语音理解、回复生成、语音合成和动作文件输出。
+本项目是回合式机器人头部语音交互程序。它在单个 Python 进程中组织音频采集、语音理解、韵律情绪融合、回复生成、语音合成和动作文件输出。
 
 ```text
 音频或文本输入
 → mic/vad 模式下的录音与 EnergyVAD
-→ SER 语音情绪识别
-→ 情绪状态平滑
+→ SER 离散标签与韵律特征融合
+→ 情绪状态平滑与时间衰减
 → ASR 语音转文本
 → 短期记忆与 LLM
 → TTS 回复 WAV
@@ -18,7 +18,7 @@
 → Idle
 ```
 
-Windows 已完成本地真实工作流验证。Ubuntu 当前完成了代码适配、跨平台路径处理和离线测试准备；原生 Ubuntu 主机上的真实麦克风、扬声器、串口和模型推理仍待验证。
+Windows 已完成本地真实工作流验证，Windows/Ubuntu CI 离线测试均已覆盖。原生 Ubuntu 主机上的真实麦克风、扬声器、串口和模型推理仍待验证。
 
 ## 2. 已实现后端
 
@@ -26,7 +26,7 @@ Windows 已完成本地真实工作流验证。Ubuntu 当前完成了代码适�
 | --- | --- | --- |
 | VAD | `energy` | 实时录音端点检测，带环境噪声校准和迟滞阈值 |
 | ASR | `mock`、`faster_whisper` | 占位文本或本地完整 WAV 识别 |
-| SER | `heuristic`、`sensevoice` | RMS/ZCR 规则或本地 SenseVoiceSmall |
+| SER | `heuristic`、`sensevoice` | 标准库韵律规则，或本地 SenseVoiceSmall 标签与韵律融合 |
 | LLM | `mock`、`ollama`、`lmstudio` | 占位策略或本地 LLM 运行时 |
 | TTS | `mock`、`edge_tts`、`piper` | 占位 WAV、联网 TTS 或本地 Piper |
 
@@ -143,6 +143,8 @@ cp .env.example .env
 | `STATE_FILE` | `outputs/emotion_state.json` | EMA 情绪平滑状态 |
 | `MAX_HISTORY_TURNS` | `3` | 传入 LLM 和保留的最近轮数；小于等于 0 时禁用记忆 |
 | `EMOTION_SMOOTH_ALPHA` | `0.35` | 情绪状态 EMA 更新比例 |
+| `EMOTION_DECAY_HALF_LIFE_SECONDS` | `120` | 无新证据时 V/A/D 向中性衰减的半衰期 |
+| `EMOTION_MAX_STEP` | `0.25` | 单轮每个 V/A/D 维度允许的最大变化量 |
 
 ### 5.2 EnergyVAD
 
@@ -187,7 +189,7 @@ faster-whisper 内置 VAD 只处理已经录制的文件；`vad` 模式的实时
 | `SER_LANGUAGE` | `zh` | 传给 SenseVoice 的语言参数 |
 | `SER_FALLBACK_TO_HEURISTIC` | `1` | warmup 或推理失败时回退到规则后端 |
 
-SenseVoice 初始化使用本地模型、`disable_update=True` 和 `disable_pbar=True`。标准输出没有本项目可直接使用的校准后情绪概率，因此 `intensity=0.50`、`confidence=0.50` 是适配层默认值，不应用于模型精度评估。
+SenseVoice 初始化使用本地模型、`disable_update=True` 和 `disable_pbar=True`。SenseVoice 负责提供离散情绪标签；标准输出没有本项目可直接使用的校准后情绪概率。V1.6 的 `intensity` 来自韵律特征，`confidence` 表示融合证据强度，不是 SenseVoice 模型概率，也不应用于模型精度评估。
 
 ### 5.5 Ollama 与 LM Studio
 
@@ -220,6 +222,20 @@ SenseVoice 初始化使用本地模型、`disable_update=True` 和 `disable_pbar
 | `TTS_PIPER_USE_JSON_INPUT` | `0` | 是否通过单行 UTF-8 JSON 输入 |
 | `TTS_PIPER_ESPEAK_DATA` | 未设置 | 可选 espeak-ng-data 目录 |
 | `TTS_PIPER_EXTRA_ARGS` | 未设置 | 可选 Piper 参数；不能覆盖输出路径 |
+
+### 5.7 V1.6 韵律融合与状态衰减
+
+`srtp_voice/prosody.py` 使用 Python 标准库从 PCM16 WAV 提取 RMS 均值/峰值、能量变化、基频统计、发声比例、停顿比例、时长和活动变化率。`speech_rate_proxy` 只是能量峰值或活动变化的近似率，不是准确字数或音节数。
+
+融合遵循保守边界：已知 SenseVoice 标签保持不变，韵律只调整强度和证据强度；SenseVoice 返回 `unknown`、使用 `heuristic` 或进入 fallback 时，才允许把高能量高变化判为 `excited`、低能量低活动判为 `tired`，其他情况保持 `neutral`。仅凭韵律不能可靠区分 `happy/angry` 或 `sad/tired`。
+
+持久化情绪状态先按半衰期指数衰减：
+
+```text
+decay_factor = 0.5 ** (elapsed_seconds / EMOTION_DECAY_HALF_LIFE_SECONDS)
+```
+
+随后使用 `EMOTION_SMOOTH_ALPHA`、本轮证据强度和强度共同计算 EMA 权重，并由 `EMOTION_MAX_STEP` 限制单轮 V/A/D 跳变。旧版只包含 `valence`、`arousal`、`dominance`、`label` 的状态文件仍可加载。
 
 ## 6. 本地模型与权重
 
@@ -480,12 +496,13 @@ python -m pip check
 
 CI 不运行真实麦克风、音频播放、模型下载或推理、Ollama、Piper 和串口访问，也不安装 `requirements-asr.txt` 或 `requirements-ser.txt`。因此 CI 结果不能代替真实模型和硬件验收。
 
-当前首次 CI 尝试遇到 GitHub Actions 平台 Startup failure，job 未实际启动，不能记为 Windows/Ubuntu 已通过。后续结果以 GitHub Actions 当前运行记录为准；README 暂不添加 CI badge。
+Windows 和 Ubuntu CI 使用相同的离线测试命令，不加载真实模型或访问硬件。CI 通过不能代替真实音频设备和模型工作流验收。
 
 ## 13. 当前限制
 
 - ASR 接收完整 WAV，不是流式 ASR。
 - LLM 和 TTS 均为完整回复；TTS 不是流式输出。
+- `streaming.py` 只提供带可选会话/轮次/序号字段的兼容接口，未实现真实流式流水线。
 - continuous 是同一 Python 进程内的同步循环，不是 FastAPI、HTTP 服务或后台进程。
 - 唇动是短时能量近似，不是音素、viseme 或视觉嘴形追踪。
 - 尚未实现 STM32 舵机闭环，也没有视觉输入。
