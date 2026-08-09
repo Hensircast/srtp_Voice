@@ -121,6 +121,7 @@ class IncrementalTTSPlayer:
         queue_maxsize: int = 4,
         temp_parent: Path | None = None,
         player: Callable[[Path], None] | None = None,
+        playback_enabled: bool = True,
         lip_sync_builder: Callable[[Path], Dict[str, Any]] = build_energy_lip_sync,
         on_audio_ready: Callable[[SynthesizedSpeechChunk], None] | None = None,
         on_playback_started: Callable[[SynthesizedSpeechChunk], None] | None = None,
@@ -133,6 +134,7 @@ class IncrementalTTSPlayer:
             raise ValueError("queue_maxsize must be at least 1")
         self.synthesizer = synthesizer
         self.player = player or CancellableWavPlayer()
+        self.playback_enabled = playback_enabled
         self.lip_sync_builder = lip_sync_builder
         self.on_audio_ready = on_audio_ready
         self.on_playback_started = on_playback_started
@@ -295,6 +297,8 @@ class IncrementalTTSPlayer:
             if self.on_audio_ready is not None:
                 self.on_audio_ready(result)
             if self._is_cancelled(chunk.turn_id):
+                return
+            if not self.playback_enabled:
                 return
             if self.on_playback_started is not None:
                 self.on_playback_started(result)

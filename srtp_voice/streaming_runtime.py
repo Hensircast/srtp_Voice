@@ -196,6 +196,7 @@ class StreamingResponseRuntime:
         *,
         event_sink: Callable[[StreamEvent], None] | None = None,
         player: Callable[[Path], None] | None = None,
+        playback_enabled: bool = True,
         temp_parent: Path | None = None,
         id_factory: Callable[[], str] | None = None,
     ) -> None:
@@ -215,6 +216,7 @@ class StreamingResponseRuntime:
             queue_maxsize=cfg.stream_tts_queue_size,
             temp_parent=temp_parent,
             player=player,
+            playback_enabled=playback_enabled,
             on_audio_ready=self._on_audio_ready,
             on_playback_started=self._on_playback_started,
             on_playback_finished=self._on_playback_finished,

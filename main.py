@@ -426,7 +426,7 @@ def main() -> None:
                 generator,
                 tts,
                 event_sink=stream_event_sink,
-                player=(lambda path: None) if args.no_play else None,
+                playback_enabled=not args.no_play,
                 temp_parent=cfg.output_dir,
             )
             print(
@@ -484,6 +484,21 @@ def main() -> None:
     except KeyboardInterrupt:
         if streaming_runtime is not None:
             streaming_runtime.cancel_current(reason="keyboard_interrupt")
+            save_json(
+                streaming_events_file,
+                [event.to_dict() for event in streaming_runtime.controller.history],
+            )
+            save_json(
+                streaming_metrics_file,
+                {
+                    "summary": streaming_runtime.controller.latency_summary(),
+                    "late_events": streaming_runtime.controller.late_events,
+                    "dropped_event_history": (
+                        streaming_runtime.controller.dropped_history_events
+                    ),
+                    "cancelled": True,
+                },
+            )
         fsm.set(DialogueStage.IDLE)
         save_fsm_state(fsm, state_file)
         print("\n已收到 Ctrl+C，状态机已回到 Idle，程序正常退出")

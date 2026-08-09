@@ -174,6 +174,40 @@ def test_streaming_response_reconstructs_text_and_combines_audio(tmp_path) -> No
     assert result.latency.latencies_ms["turn_total_ms"] >= 0
 
 
+def test_streaming_response_without_playback_has_no_playback_events_or_metrics(
+    tmp_path,
+) -> None:
+    events = []
+    played = []
+    runtime = StreamingResponseRuntime(
+        _cfg(tmp_path),
+        FakeGenerator(["reply sentence."]),
+        FakeTTS(),
+        event_sink=events.append,
+        player=lambda path: played.append(path),
+        playback_enabled=False,
+        temp_parent=tmp_path,
+        id_factory=lambda: "turn-no-play",
+    )
+    handle = runtime.begin_turn()
+    result = runtime.run_response(
+        handle,
+        user_text="test",
+        emotion=EmotionResult("neutral", 0.2, 0.8, {}),
+        history=[],
+        reply_audio=tmp_path / "reply.wav",
+    )
+    runtime.close()
+
+    event_types = [event.event_type for event in events]
+    assert played == []
+    assert StreamEventType.AUDIO_CHUNK_READY in event_types
+    assert StreamEventType.PLAYBACK_STARTED not in event_types
+    assert StreamEventType.PLAYBACK_FINISHED not in event_types
+    assert "time_to_playback_ms" not in result.latency.latencies_ms
+    assert "playback_duration_ms" not in result.latency.latencies_ms
+
+
 def test_streaming_tts_failure_cancels_turn_without_a_final_result(tmp_path) -> None:
     events = []
     runtime = StreamingResponseRuntime(

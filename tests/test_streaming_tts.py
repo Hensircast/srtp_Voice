@@ -214,3 +214,25 @@ def test_cancel_turn_stops_active_cancellable_playback(tmp_path) -> None:
 
     assert player.stop_calls == 1
     assert finished == []
+
+
+def test_playback_disabled_still_synthesizes_without_playback_events(tmp_path) -> None:
+    played = []
+    started = []
+    finished = []
+    worker = IncrementalTTSPlayer(
+        FakeSynthesizer(),
+        temp_parent=tmp_path,
+        player=lambda path: played.append(path),
+        playback_enabled=False,
+        on_playback_started=started.append,
+        on_playback_finished=finished.append,
+    )
+    worker.start()
+    assert worker.submit(TextChunk("silent output", turn_id="turn-1", sequence_id=0))
+    worker.join()
+    worker.close()
+
+    assert played == []
+    assert started == []
+    assert finished == []
