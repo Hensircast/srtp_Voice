@@ -42,6 +42,19 @@ def env_bounded_float(
     return max(minimum, min(maximum, value))
 
 
+def env_bounded_int(
+    name: str,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
 def derive_url(base_url: str, endpoint: str) -> str:
     return f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}"
 
@@ -123,6 +136,14 @@ class AppConfig:
     asr_min_silence_ms: int = 500
     asr_condition_on_previous_text: bool = False
 
+    # V1.8 streaming is opt-in at the CLI; these bound callback and worker queues.
+    stream_audio_queue_size: int = 32
+    stream_tts_queue_size: int = 4
+    stream_sentence_max_chars: int = 80
+    stream_sentence_max_wait_seconds: float = 0.8
+    stream_asr_partial_interval_seconds: float = 0.8
+    stream_barge_in_enabled: bool = False
+
     # SER: lightweight heuristic by default; SenseVoice uses a local model only.
     ser_backend: str = "heuristic"  # heuristic / sensevoice
     ser_model: Path | None = None
@@ -198,6 +219,22 @@ class AppConfig:
             asr_vad_filter=env_bool("ASR_VAD_FILTER", True),
             asr_min_silence_ms=max(1, int(os.getenv("ASR_MIN_SILENCE_MS", "500"))),
             asr_condition_on_previous_text=env_bool("ASR_CONDITION_ON_PREVIOUS_TEXT", False),
+            stream_audio_queue_size=env_bounded_int(
+                "STREAM_AUDIO_QUEUE_SIZE", 32, 1, 4096
+            ),
+            stream_tts_queue_size=env_bounded_int(
+                "STREAM_TTS_QUEUE_SIZE", 4, 1, 256
+            ),
+            stream_sentence_max_chars=env_bounded_int(
+                "STREAM_SENTENCE_MAX_CHARS", 80, 1, 10000
+            ),
+            stream_sentence_max_wait_seconds=env_bounded_float(
+                "STREAM_SENTENCE_MAX_WAIT_SECONDS", 0.8, 0.01, 60.0
+            ),
+            stream_asr_partial_interval_seconds=env_bounded_float(
+                "STREAM_ASR_PARTIAL_INTERVAL_SECONDS", 0.8, 0.05, 60.0
+            ),
+            stream_barge_in_enabled=env_bool("STREAM_BARGE_IN_ENABLED", False),
             ser_backend=env_text("SER_BACKEND", "heuristic"),
             ser_model=Path(value) if (value := env_text("SER_MODEL")) else None,
             ser_device=env_text("SER_DEVICE", "cpu"),
