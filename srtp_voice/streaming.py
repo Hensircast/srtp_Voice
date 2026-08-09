@@ -305,3 +305,117 @@ class LatencyTracker:
                     "max": round(max(values), 3),
                 }
             return result
+
+
+_SENTENCE_PUNCTUATION = frozenset("。！？；：，、….!?;,:")
+_SENTENCE_CLOSERS = frozenset("”’\"'）)]】}》〉」』")
+
+
+class SentenceChunker:
+    """Incrementally split LLM text without dropping or rewriting characters."""
+
+    def __init__(
+        self,
+        *,
+        turn_id: str = "",
+        max_chars: int = 80,
+        max_wait_seconds: float = 0.8,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
+        if isinstance(max_chars, bool) or not isinstance(max_chars, int):
+            raise TypeError("max_chars must be an integer")
+        if max_chars < 1:
+            raise ValueError("max_chars must be at least 1")
+        if isinstance(max_wait_seconds, bool) or not isinstance(
+            max_wait_seconds, (int, float)
+        ):
+            raise TypeError("max_wait_seconds must be numeric")
+        if not isfinite(max_wait_seconds) or max_wait_seconds <= 0:
+            raise ValueError("max_wait_seconds must be finite and greater than zero")
+        self.turn_id = turn_id
+        self.max_chars = max_chars
+        self.max_wait_seconds = float(max_wait_seconds)
+        self._clock = clock or monotonic
+        self._buffer: list[str] = []
+        self._buffer_started_at: float | None = None
+        self._last_now: float | None = None
+        self._pending_boundary = False
+        self._next_sequence = 0
+
+    def feed(self, text: str, *, now: float | None = None) -> list[TextChunk]:
+        if not isinstance(text, str):
+            raise TypeError("SentenceChunker.feed requires text")
+        timestamp = self._now(now)
+        chunks = self._flush_due_at(timestamp)
+
+        for character in text:
+            if (
+                self._pending_boundary
+                and character not in _SENTENCE_CLOSERS
+                and character not in _SENTENCE_PUNCTUATION
+            ):
+                chunks.append(self._emit(timestamp))
+
+            if not self._buffer:
+                self._buffer_started_at = timestamp
+            self._buffer.append(character)
+
+            if character in _SENTENCE_PUNCTUATION:
+                self._pending_boundary = True
+            elif self._pending_boundary and character in _SENTENCE_CLOSERS:
+                pass
+            else:
+                self._pending_boundary = False
+
+            if len(self._buffer) >= self.max_chars and not self._pending_boundary:
+                chunks.append(self._emit(timestamp))
+
+        return chunks
+
+    def flush_due(self, *, now: float | None = None) -> list[TextChunk]:
+        return self._flush_due_at(self._now(now))
+
+    def finish(self, *, now: float | None = None) -> list[TextChunk]:
+        timestamp = self._now(now)
+        if not self._buffer:
+            return []
+        return [self._emit(timestamp, is_final=True)]
+
+    @property
+    def buffered_text(self) -> str:
+        return "".join(self._buffer)
+
+    def _flush_due_at(self, timestamp: float) -> list[TextChunk]:
+        if (
+            self._buffer
+            and self._buffer_started_at is not None
+            and timestamp - self._buffer_started_at >= self.max_wait_seconds
+        ):
+            return [self._emit(timestamp)]
+        return []
+
+    def _emit(self, timestamp: float, *, is_final: bool = False) -> TextChunk:
+        text = "".join(self._buffer)
+        if not text:
+            raise RuntimeError("Cannot emit an empty sentence chunk")
+        chunk = TextChunk(
+            text=text,
+            is_final=is_final,
+            timestamp_ms=int(timestamp * 1000),
+            turn_id=self.turn_id,
+            sequence_id=self._next_sequence,
+        )
+        self._next_sequence += 1
+        self._buffer.clear()
+        self._buffer_started_at = None
+        self._pending_boundary = False
+        return chunk
+
+    def _now(self, value: float | None) -> float:
+        timestamp = float(self._clock() if value is None else value)
+        if not isfinite(timestamp):
+            raise ValueError("SentenceChunker clock value must be finite")
+        if self._last_now is not None and timestamp < self._last_now:
+            raise RuntimeError("SentenceChunker clock moved backwards")
+        self._last_now = timestamp
+        return timestamp
