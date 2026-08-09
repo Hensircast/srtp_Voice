@@ -1,34 +1,34 @@
-# SRTP 表情机器人语音交互项目（V1.6）
+# SRTP 表情机器人语音交互项目（V1.8）
 
 ## 1. 项目定位
 
-本项目是回合式机器人头部语音交互程序。它在单个 Python 进程中组织音频采集、语音理解、韵律情绪融合、回复生成、语音合成和动作文件输出。
+本项目是回合式机器人头部语音交互程序。它在单个 Python 进程中组织音频采集、语音理解、韵律情绪融合、回复生成、语音合成和动作文件输出。默认仍运行 V1.6 同步兼容路径；显式传入 `--streaming` 时启用 V1.8 的流式麦克风帧、partial/final ASR、Ollama token 流、按句 TTS、取消与时延指标。
 
 ```text
 音频或文本输入
 → mic/vad 模式下的录音与 EnergyVAD
 → SER 离散标签与韵律特征融合
 → 情绪状态平滑与时间衰减
-→ ASR 语音转文本
-→ 短期记忆与 LLM
-→ TTS 回复 WAV
+→ ASR final 语音转文本（V1.8 可同时显示 partial）
+→ 短期记忆与 LLM（V1.8 使用 Ollama NDJSON token 流）
+→ TTS 回复 WAV（V1.8 按句合成、顺序播放并合并最终 WAV）
 → 短时能量唇动参数
 → 动作策略与串口数据文件
 → 播放或跳过播放
 → Idle
 ```
 
-Windows 已完成本地真实工作流验证，Windows/Ubuntu CI 离线测试均已覆盖。原生 Ubuntu 主机上的真实麦克风、扬声器、串口和模型推理仍待验证。
+V1.6 同步路径已有 Windows 本地真实工作流记录；V1.8 已完成 Windows 离线自动测试，并用真实 Ollama/Piper 复验了 `--no-play` 流式路径。V1.8 的真实 faster-whisper 麦克风、实际播放、主观延迟和原生 Ubuntu 设备仍需按 `docs/development/V1.8_REAL_DEVICE_TESTS.md` 验收。
 
 ## 2. 已实现后端
 
 | 模块 | 后端 | 说明 |
 | --- | --- | --- |
 | VAD | `energy` | 实时录音端点检测，带环境噪声校准和迟滞阈值 |
-| ASR | `mock`、`faster_whisper` | 占位文本或本地完整 WAV 识别 |
+| ASR | `mock`、`faster_whisper` | 同步完整 WAV；V1.8 对 PCM 快照生成 partial，并只提交一次 final |
 | SER | `heuristic`、`sensevoice` | 标准库韵律规则，或本地 SenseVoiceSmall 标签与韵律融合 |
-| LLM | `mock`、`ollama`、`lmstudio` | 占位策略或本地 LLM 运行时 |
-| TTS | `mock`、`edge_tts`、`piper` | 占位 WAV、联网 TTS 或本地 Piper |
+| LLM | `mock`、`ollama`、`lmstudio` | 同步结构化策略；V1.8 Ollama 使用 UTF-8 NDJSON token 流 |
+| TTS | `mock`、`edge_tts`、`piper` | 同步整段 WAV；V1.8 将句子依次交给单 TTS 工作线程 |
 
 默认配置保持轻量：ASR 为 `mock`、SER 为 `heuristic`、TTS 为 `mock`；LLM 默认为本地 Ollama。
 
@@ -223,7 +223,20 @@ SenseVoice 初始化使用本地模型、`disable_update=True` 和 `disable_pbar
 | `TTS_PIPER_ESPEAK_DATA` | 未设置 | 可选 espeak-ng-data 目录 |
 | `TTS_PIPER_EXTRA_ARGS` | 未设置 | 可选 Piper 参数；不能覆盖输出路径 |
 
-### 5.7 V1.6 韵律融合与状态衰减
+### 5.7 V1.8 流式配置
+
+| 环境变量 | 默认值 | 作用 |
+| --- | --- | --- |
+| `STREAM_AUDIO_QUEUE_SIZE` | `32` | 麦克风 callback 到处理线程的 PCM 帧队列上限；满时丢弃最新帧并计数 |
+| `STREAM_TTS_QUEUE_SIZE` | `4` | 待合成/播放句子队列上限；运行时使用阻塞背压保证句子不丢失 |
+| `STREAM_SENTENCE_MAX_CHARS` | `80` | 无标点长文本的强制切分字符数 |
+| `STREAM_SENTENCE_MAX_WAIT_SECONDS` | `0.8` | 已缓存文本的等待兜底；新 token 或流结束时检查 |
+| `STREAM_ASR_PARTIAL_INTERVAL_SECONDS` | `0.8` | faster-whisper PCM 快照 partial 的最小调度间隔 |
+| `STREAM_BARGE_IN_ENABLED` | `0` | 预留的自动语音打断安全开关；当前 CLI 不会据此自动开启回采环境下的 barge-in |
+
+这些值只在 `--streaming` 路径使用。队列和指标窗口均有容量上限；默认同步路径不读取流式队列，也不改变原有 `generate()`、整段 WAV ASR/TTS 和串口 packet schema。
+
+### 5.8 V1.6 韵律融合与状态衰减
 
 `srtp_voice/prosody.py` 使用 Python 标准库从 PCM16 WAV 提取 RMS 均值/峰值、能量变化、基频统计、发声比例、停顿比例、时长和活动变化率。`speech_rate_proxy` 只是能量峰值或活动变化的近似率，不是准确字数或音节数。
 
@@ -312,6 +325,12 @@ python .\main.py --mode vad --no-play
 # EnergyVAD 常驻多轮
 python .\main.py --mode vad --continuous --no-play
 
+# V1.8 流式文本、按句 TTS 和时延指标
+python .\main.py --mode console --text "请用两句话解释流式语音交互。" --streaming --no-play
+
+# V1.8 流式麦克风、partial/final ASR、按句 Piper 播放
+python .\main.py --mode vad --streaming
+
 # 只运行环境诊断
 python .\main.py --diagnose
 ```
@@ -337,13 +356,21 @@ python main.py --mode vad --no-play
 # EnergyVAD 常驻多轮
 python main.py --mode vad --continuous --no-play
 
+# V1.8 流式文本、按句 TTS 和时延指标
+python main.py --mode console --text "请用两句话解释流式语音交互。" --streaming --no-play
+
+# V1.8 流式麦克风、partial/final ASR、按句 Piper 播放
+python main.py --mode vad --streaming
+
 # 只运行环境诊断
 python main.py --diagnose
 ```
 
 `--continuous` 仅支持 `mic` 和 `vad`。它在同一 Python 进程中复用 SER、ASR、LLM、TTS、情绪平滑和记忆对象；SenseVoice 在启动时 warmup 一次。每轮结束后状态机回到 Idle，再进入下一轮；按 `Ctrl+C` 会保存 Idle 状态并正常退出。
 
-`--no-play` 只跳过回复 WAV 播放，不跳过 TTS、唇动、动作文件或记忆写入。`--text` 直接提供当前轮用户文本，可绕过 ASR，但音频模式本身仍按所选模式采集或读取音频。
+`--no-play` 只跳过回复 WAV 播放，不跳过 TTS、唇动、动作文件或记忆写入。`--text` 直接提供当前轮用户文本并绕过 ASR；同步路径仍按所选音频模式采集或读取音频，V1.8 流式路径在 `mic/vad` 与 `--text` 同时出现时使用文本调试路径而不打开麦克风。
+
+`--streaming` 不会隐式启用。Ollama 使用 `stream=true` 并解析 UTF-8 NDJSON；纯文本先输出，动作使用确定性兼容默认值，因此结构化 action 不阻塞首 token。每轮只把 final ASR 和最终 reply 写入记忆。按 `Ctrl+C` 会取消当前 turn、停止可取消播放、丢弃旧 turn 的迟到事件并关闭工作线程。没有回声消除时请优先使用耳机；自动语音 barge-in 当前保持关闭。
 
 `--diagnose` 在输出目录和完整工作流对象初始化之前返回。它不会录音、播放、加载 SenseVoice 或 faster-whisper、调用 Ollama/Piper/edge-tts、创建 `outputs`，也不会输出 API key、Token 或完整环境变量。
 
@@ -358,6 +385,8 @@ python main.py --diagnose
 | `outputs/emotion_state.json` | EMA 情绪平滑状态 |
 | `outputs/last_state.json` | 状态机阶段和轨迹 |
 | `outputs/memory.json` | 最近若干轮对话记忆 |
+| `outputs/streaming_events.json` | V1.8 有界事件历史，含 turn/sequence/单调 timestamp |
+| `outputs/streaming_metrics.json` | V1.8 最近一轮时延与滚动 count/min/p50/p95/max |
 
 continuous 模式继续覆盖这些当前轮文件，不为每轮创建新目录。
 
@@ -486,7 +515,7 @@ ollama pull qwen3:4b-instruct
 本地基础验证命令在 PowerShell 和 Bash 中相同：
 
 ```text
-python -m compileall main.py srtp_voice
+python -m compileall -q main.py srtp_voice tests
 python -m pytest -q
 git diff --check
 python -m pip check
@@ -500,11 +529,12 @@ Windows 和 Ubuntu CI 使用相同的离线测试命令，不加载真实模型�
 
 ## 13. 当前限制
 
-- ASR 接收完整 WAV，不是流式 ASR。
-- LLM 和 TTS 均为完整回复；TTS 不是流式输出。
-- `streaming.py` 只提供带可选会话/轮次/序号字段的兼容接口，未实现真实流式流水线。
+- faster-whisper 没有在本项目中维护原生增量解码器状态；V1.8 partial 来自非 callback 线程中的增长 PCM 快照，final 仍对完整语句重新识别。
+- 只有 Ollama 在 V1.8 中使用真实 token 流；mock、LM Studio 和默认同步接口保留整段兼容输出。
+- V1.8 文本流与 action 决策分离，流式 action 使用确定性默认值；需要模型生成完整结构化动作时使用默认同步路径。
+- `STREAM_SENTENCE_MAX_WAIT_SECONDS` 的检查由新 token、显式轮询或流结束触发；底层 HTTP 长时间没有任何字节时仍受 `LLM_TIMEOUT_SECONDS` 约束。
+- 自动语音 barge-in 默认关闭；当前已支持 turn 取消和活动播放停止，但没有回声消除，扬声器回采可能被误识别。
 - continuous 是同一 Python 进程内的同步循环，不是 FastAPI、HTTP 服务或后台进程。
 - 唇动是短时能量近似，不是音素、viseme 或视觉嘴形追踪。
 - 尚未实现 STM32 舵机闭环，也没有视觉输入。
-- 原生 Ubuntu 的真实音频设备、串口和真实模型运行待验证。
-- Windows/Ubuntu CI workflow 已配置，但成功结果仍需在 GitHub Actions 服务正常后重新验证。
+- V1.8 的真实 Windows 麦克风/Piper/Ollama 主观低延迟与原生 Ubuntu 设备/模型运行待人工验收。

@@ -53,7 +53,7 @@ def test_ci_workflow_runs_only_offline_base_test_commands() -> None:
 
     assert commands == [
         "python -m pip install -r requirements.txt",
-        "python -m compileall main.py srtp_voice",
+        "python -m compileall -q main.py srtp_voice tests",
         "python -m pytest -q",
         "python -m pip check",
     ]

@@ -20,7 +20,7 @@ def test_readme_covers_windows_and_ubuntu_setup() -> None:
     assert "libsndfile1" in text
     assert "ffmpeg" in text.lower()
     assert "--diagnose" in text
-    assert "Ubuntu 主机上的真实麦克风、扬声器、串口和模型推理仍待验证" in text
+    assert "原生 Ubuntu 设备/模型运行待人工验收" in text
 
 
 def test_readme_covers_current_modes_and_backends() -> None:
@@ -30,6 +30,7 @@ def test_readme_covers_current_modes_and_backends() -> None:
         assert f"--mode {mode}" in text
     assert "--continuous" in text
     assert "--no-play" in text
+    assert "--streaming" in text
 
     for backend in (
         "faster-whisper",
@@ -58,7 +59,7 @@ def test_readme_covers_cross_platform_piper_and_ci() -> None:
     assert "ubuntu-latest" in text
     assert "Python 3.11" in text
     assert "CI 不运行真实麦克风" in text
-    assert "Windows/Ubuntu CI 离线测试均已覆盖" in text
+    assert "windows-latest" in text and "ubuntu-latest" in text
     assert "CI 通过不能代替真实音频设备和模型工作流验收" in text
 
 
@@ -82,7 +83,27 @@ def test_readme_documents_v16_emotion_fusion_boundaries() -> None:
     assert "不能可靠区分 `happy/angry` 或 `sad/tired`" in text
     assert "EMOTION_DECAY_HALF_LIFE_SECONDS" in text
     assert "EMOTION_MAX_STEP" in text
-    assert "未实现真实流式流水线" in text
+    assert "Ollama NDJSON token 流" in text
+    assert "每轮只把 final ASR 和最终 reply 写入记忆" in text
+
+
+def test_readme_documents_v18_streaming_boundaries_and_outputs() -> None:
+    text = _readme()
+
+    for setting in (
+        "STREAM_AUDIO_QUEUE_SIZE",
+        "STREAM_TTS_QUEUE_SIZE",
+        "STREAM_SENTENCE_MAX_CHARS",
+        "STREAM_SENTENCE_MAX_WAIT_SECONDS",
+        "STREAM_ASR_PARTIAL_INTERVAL_SECONDS",
+        "STREAM_BARGE_IN_ENABLED",
+    ):
+        assert setting in text
+    assert "outputs/streaming_events.json" in text
+    assert "outputs/streaming_metrics.json" in text
+    assert "partial 来自非 callback 线程" in text
+    assert "自动语音 barge-in 默认关闭" in text
+    assert "默认同步路径" in text
 
 
 def test_readme_does_not_restore_removed_backends_or_settings() -> None:
