@@ -37,8 +37,8 @@ def test_ci_workflow_has_expected_triggers_and_matrix() -> None:
 def test_ci_workflow_uses_supported_actions_and_environment() -> None:
     text = _workflow_text()
 
-    assert "actions/checkout@v4" in text
-    assert "actions/setup-python@v5" in text
+    assert "actions/checkout@v7" in text
+    assert "actions/setup-python@v7" in text
     assert 'PIP_DISABLE_PIP_VERSION_CHECK: "1"' in text
     assert 'PIP_NO_CACHE_DIR: "1"' in text
     assert 'PYTHONUTF8: "1"' in text
