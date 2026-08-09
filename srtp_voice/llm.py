@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import codecs
 import json
-from typing import Any, Callable, Dict, List
+from time import monotonic
+from typing import Any, Callable, Dict, Iterable, Iterator, List
 
 try:
     import requests
@@ -9,6 +11,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by monkeypatch tests
     requests = None
 
 from .config import AppConfig
+from .streaming import TextChunk
 from .types import EmotionResult, StrategyResult
 
 
@@ -99,6 +102,13 @@ class LLMResponseError(RuntimeError):
     pass
 
 
+class _EchoOnlyStreamError(LLMResponseError):
+    pass
+
+
+STREAMING_FALLBACK_REPLY = "抱歉，我没有生成可靠的回答，请换一种说法再试一次。"
+
+
 def _require_requests():
     if requests is None:
         raise RuntimeError(
@@ -106,6 +116,55 @@ def _require_requests():
             "Install it with: python -m pip install requests"
         )
     return requests
+
+
+def _iter_ndjson_objects(chunks: Iterable[bytes]) -> Iterator[Dict[str, Any]]:
+    """Incrementally decode UTF-8 bytes and parse one JSON object per line."""
+
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    buffer = ""
+    line_number = 0
+
+    def parse_line(line: str) -> Dict[str, Any] | None:
+        nonlocal line_number
+        line_number += 1
+        stripped = line.strip()
+        if line_number == 1:
+            stripped = stripped.lstrip("\ufeff")
+        if not stripped:
+            return None
+        try:
+            value = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            raise LLMResponseError(
+                f"Ollama stream returned invalid NDJSON on line {line_number}."
+            ) from exc
+        if not isinstance(value, dict):
+            raise LLMResponseError(
+                f"Ollama stream NDJSON line {line_number} is not an object."
+            )
+        return value
+
+    try:
+        for chunk in chunks:
+            if not isinstance(chunk, bytes):
+                raise LLMResponseError("Ollama stream yielded a non-bytes response chunk.")
+            if not chunk:
+                continue
+            buffer += decoder.decode(chunk)
+            while "\n" in buffer:
+                line, buffer = buffer.split("\n", 1)
+                value = parse_line(line.rstrip("\r"))
+                if value is not None:
+                    yield value
+        buffer += decoder.decode(b"", final=True)
+    except UnicodeDecodeError as exc:
+        raise LLMResponseError("Ollama stream ended with invalid UTF-8 data.") from exc
+
+    if buffer:
+        value = parse_line(buffer.rstrip("\r"))
+        if value is not None:
+            yield value
 
 
 def _normalize_echo_text(text: str) -> str:
@@ -159,6 +218,101 @@ class StrategyGenerator:
             raise
 
         raise ValueError("Unknown LLM_BACKEND. Use mock, ollama, or lmstudio.")
+
+    @staticmethod
+    def default_stream_action() -> Dict[str, Any]:
+        """Return the deterministic action available before streamed text ends."""
+
+        return StrategyGenerator._normalize_action({})
+
+    def generate_stream(
+        self,
+        user_text: str,
+        emotion: EmotionResult,
+        history: List[Dict[str, Any]],
+        *,
+        turn_id: str = "",
+    ) -> Iterator[TextChunk]:
+        """Yield reply-text deltas without waiting for structured robot actions.
+
+        Ollama uses its NDJSON ``stream=true`` transport. Other backends retain
+        compatibility by yielding their synchronous result as one final chunk.
+        A successful Ollama stream ends with an empty ``is_final`` marker so no
+        generated text has to be delayed merely to identify the last token.
+        """
+
+        backend = self.cfg.llm_backend.lower()
+        if backend != "ollama":
+            result = self.generate(user_text, emotion, history)
+            yield TextChunk(
+                text=result.reply_text,
+                is_final=True,
+                timestamp_ms=int(monotonic() * 1000),
+                turn_id=turn_id,
+                sequence_id=0,
+            )
+            return
+
+        sequence = 0
+        emitted_text = False
+
+        def emit(parts: Iterable[str]) -> Iterator[TextChunk]:
+            nonlocal sequence, emitted_text
+            for part in parts:
+                if not part:
+                    continue
+                emitted_text = True
+                yield TextChunk(
+                    text=part,
+                    is_final=False,
+                    timestamp_ms=int(monotonic() * 1000),
+                    turn_id=turn_id,
+                    sequence_id=sequence,
+                )
+                sequence += 1
+
+        try:
+            req = _require_requests()
+            if self._uses_standard_ollama_chat_url():
+                self._check_ollama()
+            messages = self._build_streaming_messages(user_text, emotion, history)
+            try:
+                parts = self._validated_stream_reply(
+                    user_text,
+                    self._request_ollama_text_stream(req, messages),
+                )
+                yield from emit(parts)
+            except _EchoOnlyStreamError:
+                # The possible echo prefix is held back, so a repair cannot
+                # duplicate already emitted text. Repair is collected because
+                # correctness matters more than latency on this exceptional path.
+                try:
+                    repair_parts = list(
+                        self._validated_stream_reply(
+                            user_text,
+                            self._request_ollama_text_stream(
+                                req,
+                                self._build_echo_repair_messages(user_text, history),
+                            ),
+                        )
+                    )
+                except Exception:
+                    repair_parts = [STREAMING_FALLBACK_REPLY]
+                yield from emit(repair_parts)
+        except Exception:
+            if emitted_text or not self.cfg.llm_fallback_to_mock:
+                raise
+            yield from emit([self._mock_generate(user_text, emotion, history).reply_text])
+
+        if not emitted_text:
+            raise LLMResponseError("Ollama returned an empty text stream.")
+        yield TextChunk(
+            text="",
+            is_final=True,
+            timestamp_ms=int(monotonic() * 1000),
+            turn_id=turn_id,
+            sequence_id=sequence,
+        )
 
     def _mock_generate(self, user_text: str, emotion: EmotionResult, history: List[Dict[str, Any]]) -> StrategyResult:
         if emotion.label in {
@@ -287,6 +441,114 @@ class StrategyGenerator:
             raise LLMResponseError(error)
 
         return content
+
+    def _request_ollama_text_stream(
+        self,
+        req: Any,
+        messages: List[Dict[str, str]],
+    ) -> Iterator[str]:
+        payload = {
+            "model": self.cfg.llm_model,
+            "messages": messages,
+            "stream": True,
+            "options": {
+                "temperature": self.cfg.llm_temperature,
+                "num_predict": self.cfg.llm_max_tokens,
+                "num_ctx": self.cfg.llm_context_tokens,
+            },
+        }
+        try:
+            response = req.post(
+                self.cfg.llm_ollama_chat_url,
+                json=payload,
+                timeout=self.cfg.llm_timeout_seconds,
+                stream=True,
+            )
+            response.raise_for_status()
+        except req.Timeout as exc:
+            raise RuntimeError("Ollama streaming request timed out.") from exc
+        except req.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else "unknown"
+            response_text = exc.response.text[:500] if exc.response is not None else ""
+            detail = f" Response body: {response_text}" if response_text else ""
+            raise RuntimeError(f"Ollama streaming returned HTTP {status}.{detail}") from exc
+        except req.RequestException as exc:
+            raise RuntimeError(
+                f"Cannot connect to Ollama at {self.cfg.llm_ollama_chat_url}."
+            ) from exc
+
+        saw_done = False
+        saw_content = False
+        try:
+            try:
+                bodies = _iter_ndjson_objects(response.iter_content(chunk_size=4096))
+                for body in bodies:
+                    error = body.get("error")
+                    if error:
+                        raise LLMResponseError(f"Ollama stream error: {error}")
+                    message = body.get("message", {})
+                    content = message.get("content", "") if isinstance(message, dict) else None
+                    if not isinstance(content, str):
+                        raise LLMResponseError(
+                            "Ollama stream returned non-string message content."
+                        )
+                    if content:
+                        saw_content = True
+                        yield content
+                    if body.get("done") is True:
+                        if body.get("done_reason") == "length":
+                            raise LLMResponseError(
+                                "Ollama stream was truncated because done_reason=length. "
+                                "Increase LLM_MAX_TOKENS."
+                            )
+                        saw_done = True
+                        break
+            except req.Timeout as exc:
+                raise RuntimeError("Ollama text stream timed out while reading.") from exc
+            except req.RequestException as exc:
+                raise RuntimeError("Ollama text stream was interrupted.") from exc
+        finally:
+            close = getattr(response, "close", None)
+            if callable(close):
+                close()
+
+        if not saw_done:
+            raise LLMResponseError("Ollama text stream ended before done=true.")
+        if not saw_content:
+            raise LLMResponseError("Ollama returned an empty text stream.")
+
+    @staticmethod
+    def _validated_stream_reply(
+        user_text: str,
+        tokens: Iterable[str],
+    ) -> Iterator[str]:
+        """Hold only a possible echo prefix; release text once it diverges."""
+
+        buffered: List[str] = []
+        safe_to_emit = _is_explicit_repeat_request(user_text)
+        normalized_user = _normalize_echo_text(user_text)
+        for token in tokens:
+            buffered.append(token)
+            if not safe_to_emit:
+                candidate = "".join(buffered)
+                normalized_candidate = "".join(candidate.strip().casefold().split())
+                without_trailing = normalized_candidate.rstrip(_ECHO_TRAILING_PUNCTUATION)
+                safe_to_emit = not (
+                    not without_trailing
+                    or normalized_user.startswith(without_trailing)
+                    or without_trailing == normalized_user
+                )
+            if safe_to_emit:
+                yield "".join(buffered)
+                buffered.clear()
+
+        if buffered:
+            reply = "".join(buffered)
+            if _is_echo_only_reply(user_text, reply):
+                raise _EchoOnlyStreamError("Ollama returned an echo-only text stream.")
+            if not reply.strip():
+                raise LLMResponseError("Ollama returned an empty text stream.")
+            yield reply
 
     def _uses_standard_ollama_chat_url(self) -> bool:
         derived_chat_url = self.cfg.llm_ollama_base_url.rstrip("/") + "/api/chat"
@@ -529,6 +791,40 @@ class StrategyGenerator:
             "</speech_emotion>"
         )
         messages.append({"role": "user", "content": current_content})
+        return messages
+
+    def _build_streaming_messages(
+        self,
+        user_text: str,
+        emotion: EmotionResult,
+        history: List[Dict[str, Any]],
+    ) -> List[Dict[str, str]]:
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是中文语音助手。直接回答当前用户请求，只输出适合 TTS 的自然口语正文。"
+                    "不要输出 JSON、Markdown、标题或机器人动作。"
+                    "除非用户明确要求复述，否则不得只复制或改写用户问题。"
+                    "信息不足时提出一个简短、具体的澄清问题。"
+                    "准确保留数字、型号、姓名、日期和历史代号。"
+                    "语音情绪只能影响措辞和语气，不能替代问题答案。"
+                ),
+            }
+        ]
+        messages.extend(self._history_messages(history))
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "当前用户请求：\n"
+                    f"<user_request>\n{user_text}\n</user_request>\n"
+                    "语音情绪辅助信息：\n"
+                    f"<speech_emotion>\n{json.dumps(emotion.to_dict(), ensure_ascii=False)}\n"
+                    "</speech_emotion>"
+                ),
+            }
+        )
         return messages
 
     def _build_echo_repair_messages(
