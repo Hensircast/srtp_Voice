@@ -176,7 +176,9 @@ def test_parse_args_continuous_defaults_false(monkeypatch) -> None:
     import main
 
     monkeypatch.setattr(sys, "argv", ["main.py"])
-    assert main.parse_args().continuous is False
+    args = main.parse_args()
+    assert args.continuous is False
+    assert args.streaming is False
 
 
 @pytest.mark.parametrize("mode", ["console", "file"])

@@ -200,3 +200,28 @@ def test_latency_tracker_aggregates_p50_and_p95_across_turns() -> None:
         "p95": 95.05,
         "max": 100.0,
     }
+
+
+def test_latency_tracker_uses_a_bounded_rolling_sample_window() -> None:
+    tracker = LatencyTracker(max_samples=2)
+    for index in range(1, 4):
+        turn_id = f"turn-{index}"
+        tracker.observe(StreamEvent(StreamEventType.TURN_STARTED, turn_id, 0, 1.0))
+        tracker.observe(
+            StreamEvent(
+                StreamEventType.TURN_FINISHED,
+                turn_id,
+                1,
+                1.0 + index / 1000.0,
+            )
+        )
+        tracker.finish_turn(turn_id)
+
+    assert tracker.completed_turns == 3
+    assert tracker.summary()["turn_total_ms"] == {
+        "count": 2,
+        "min": 2.0,
+        "p50": 2.5,
+        "p95": 2.95,
+        "max": 3.0,
+    }

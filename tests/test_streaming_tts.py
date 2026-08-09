@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import struct
+import threading
 import wave
 
 from srtp_voice.streaming import TextChunk
@@ -178,3 +179,38 @@ def test_worker_records_failure_and_continues_with_next_chunk(tmp_path) -> None:
     assert "synthetic failure" in str(errors[0].error)
     assert len(worker.failures) == 1
     assert played == ["chunk-00000001.wav"]
+
+
+def test_cancel_turn_stops_active_cancellable_playback(tmp_path) -> None:
+    class BlockingPlayer:
+        def __init__(self):
+            self.started = threading.Event()
+            self.released = threading.Event()
+            self.stop_calls = 0
+
+        def __call__(self, path):
+            self.started.set()
+            assert self.released.wait(timeout=2)
+
+        def stop(self):
+            self.stop_calls += 1
+            self.released.set()
+
+    player = BlockingPlayer()
+    finished = []
+    worker = IncrementalTTSPlayer(
+        FakeSynthesizer(),
+        temp_parent=tmp_path,
+        player=player,
+        on_playback_finished=finished.append,
+    )
+    worker.start()
+    assert worker.submit(TextChunk("playing", turn_id="turn-1", sequence_id=0))
+    assert player.started.wait(timeout=2)
+
+    worker.cancel_turn("turn-1")
+    worker.join()
+    worker.close()
+
+    assert player.stop_calls == 1
+    assert finished == []

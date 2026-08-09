@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from enum import Enum
 from math import isfinite
@@ -265,10 +265,15 @@ def _percentile(values: list[float], percentile: float) -> float:
 class LatencyTracker:
     """Collect per-turn latency snapshots and aggregate p50/p95 metrics."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, max_samples: int = 1000) -> None:
+        if max_samples < 1:
+            raise ValueError("max_samples must be at least 1")
         self._active: Dict[str, TurnTiming] = {}
-        self._completed: list[TurnTimingSnapshot] = []
-        self._samples: Dict[str, list[float]] = defaultdict(list)
+        self._completed: deque[TurnTimingSnapshot] = deque(maxlen=max_samples)
+        self._completed_count = 0
+        self._samples: Dict[str, deque[float]] = defaultdict(
+            lambda: deque(maxlen=max_samples)
+        )
         self._lock = Lock()
 
     def observe(self, event: StreamEvent) -> None:
@@ -284,6 +289,7 @@ class LatencyTracker:
                 raise KeyError(f"No active timing data for turn {turn_id!r}") from exc
             snapshot = timing.snapshot()
             self._completed.append(snapshot)
+            self._completed_count += 1
             for name, value in snapshot.latencies_ms.items():
                 self._samples[name].append(value)
             return snapshot
@@ -291,18 +297,19 @@ class LatencyTracker:
     @property
     def completed_turns(self) -> int:
         with self._lock:
-            return len(self._completed)
+            return self._completed_count
 
     def summary(self) -> Dict[str, Dict[str, float | int]]:
         with self._lock:
             result: Dict[str, Dict[str, float | int]] = {}
             for name, values in sorted(self._samples.items()):
+                sample = list(values)
                 result[name] = {
-                    "count": len(values),
-                    "min": round(min(values), 3),
-                    "p50": round(_percentile(values, 0.50), 3),
-                    "p95": round(_percentile(values, 0.95), 3),
-                    "max": round(max(values), 3),
+                    "count": len(sample),
+                    "min": round(min(sample), 3),
+                    "p50": round(_percentile(sample, 0.50), 3),
+                    "p95": round(_percentile(sample, 0.95), 3),
+                    "max": round(max(sample), 3),
                 }
             return result
 
