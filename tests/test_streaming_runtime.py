@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import struct
+import threading
 import types
 import wave
 
@@ -123,6 +124,47 @@ def test_stale_turn_failure_does_not_cancel_the_current_turn() -> None:
     assert not current.cancelled.is_set()
     assert cancelled == [old.turn_id]
     controller.finish_turn(current.turn_id)
+
+
+def test_turn_controller_observes_concurrent_events_in_sequence_order() -> None:
+    controller = StreamingTurnController(id_factory=lambda: "turn-concurrent")
+    handle = controller.start_turn()
+    original_observe = controller._tracker.observe
+    first_observe_started = threading.Event()
+    second_observed = threading.Event()
+    observed_sequences = []
+    errors = []
+
+    def observe(event):
+        if event.sequence == 1:
+            first_observe_started.set()
+            second_observed.wait(timeout=0.2)
+        elif event.sequence == 2:
+            second_observed.set()
+        original_observe(event)
+        observed_sequences.append(event.sequence)
+
+    controller._tracker.observe = observe
+
+    def emit(event_type):
+        try:
+            controller.emit(handle.turn_id, event_type)
+        except Exception as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    first = threading.Thread(target=emit, args=(StreamEventType.VAD_STARTED,))
+    second = threading.Thread(target=emit, args=(StreamEventType.LLM_TOKEN,))
+    first.start()
+    assert first_observe_started.wait(timeout=1)
+    second.start()
+    first.join(timeout=1)
+    second.join(timeout=1)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert errors == []
+    assert observed_sequences == [1, 2]
+    controller.finish_turn(handle.turn_id)
 
 
 def test_turn_event_history_is_bounded() -> None:

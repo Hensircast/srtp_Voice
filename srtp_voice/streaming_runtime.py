@@ -114,7 +114,7 @@ class StreamingTurnController:
                 return None
             factory = self._factories[turn_id]
             event = factory.emit(event_type, payload)
-        self._tracker.observe(event)
+            self._tracker.observe(event)
         self._store_and_publish(event)
         return event
 
@@ -133,9 +133,9 @@ class StreamingTurnController:
             factory = self._factories[handle.turn_id]
             handle.cancelled.set()
             event = factory.emit(StreamEventType.TURN_CANCELLED, {"reason": reason})
+            self._tracker.observe(event)
             self._active = None
             self._factories.pop(handle.turn_id, None)
-        self._tracker.observe(event)
         self._store_and_publish(event)
         if self.cancel_hook is not None:
             self.cancel_hook(handle.turn_id)

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import struct
+import sys
 import threading
 import wave
 
 from srtp_voice.streaming import TextChunk
-from srtp_voice.streaming_tts import IncrementalTTSPlayer
+from srtp_voice.streaming_tts import CancellableWavPlayer, IncrementalTTSPlayer
 
 
 def _write_wav(path, value: int) -> None:
@@ -230,6 +231,61 @@ def test_cancel_turn_stops_active_cancellable_playback(tmp_path) -> None:
 
     assert player.stop_calls == 1
     assert finished == []
+
+
+def test_cancellation_during_player_setup_does_not_start_stale_audio(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    read_started = threading.Event()
+    release_read = threading.Event()
+    play_calls = []
+    stop_calls = []
+
+    class FakeSoundFile:
+        @staticmethod
+        def read(path, *, dtype):
+            assert dtype == "float32"
+            read_started.set()
+            assert release_read.wait(timeout=2)
+            return [0.0], 16000
+
+    class FakeSoundDevice:
+        @staticmethod
+        def play(data, sample_rate):
+            play_calls.append((data, sample_rate))
+
+        @staticmethod
+        def wait():
+            return None
+
+        @staticmethod
+        def stop():
+            stop_calls.append(True)
+
+    monkeypatch.setitem(sys.modules, "soundfile", FakeSoundFile)
+    monkeypatch.setitem(sys.modules, "sounddevice", FakeSoundDevice)
+
+    worker = IncrementalTTSPlayer(
+        FakeSynthesizer(),
+        temp_parent=tmp_path,
+        player=CancellableWavPlayer(),
+    )
+    worker.start()
+    assert worker.submit(TextChunk("stale", turn_id="turn-old", sequence_id=0))
+    assert read_started.wait(timeout=2)
+
+    worker.cancel_turn("turn-old")
+    release_read.set()
+    worker.join()
+    assert play_calls == []
+
+    assert worker.submit(TextChunk("fresh", turn_id="turn-new", sequence_id=0))
+    worker.join()
+    worker.close()
+
+    assert play_calls == [([0.0], 16000)]
+    assert stop_calls == []
 
 
 def test_playback_disabled_still_synthesizes_without_playback_events(tmp_path) -> None:

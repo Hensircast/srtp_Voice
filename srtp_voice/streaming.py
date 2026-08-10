@@ -361,6 +361,7 @@ class SentenceChunker:
         self._buffer_started_at: float | None = None
         self._last_now: float | None = None
         self._pending_boundary = False
+        self._pending_hard_boundary = False
         self._next_sequence = 0
 
     def feed(self, text: str, *, now: float | None = None) -> list[TextChunk]:
@@ -383,16 +384,21 @@ class SentenceChunker:
 
             if character in _SENTENCE_HARD_PUNCTUATION:
                 self._pending_boundary = True
+                self._pending_hard_boundary = True
             elif character in _SENTENCE_SOFT_PUNCTUATION:
                 self._pending_boundary = self._speakable_count() >= self.min_chars
+                self._pending_hard_boundary = False
             elif self._pending_boundary and character in _SENTENCE_CLOSERS:
                 pass
             else:
                 self._pending_boundary = False
+                self._pending_hard_boundary = False
 
             if len(self._buffer) >= self.max_chars and not self._pending_boundary:
                 chunks.append(self._emit(timestamp))
 
+        if self._pending_boundary and self._pending_hard_boundary:
+            chunks.append(self._emit(timestamp))
         return chunks
 
     def flush_due(self, *, now: float | None = None) -> list[TextChunk]:
@@ -433,6 +439,7 @@ class SentenceChunker:
         self._buffer.clear()
         self._buffer_started_at = None
         self._pending_boundary = False
+        self._pending_hard_boundary = False
         return chunk
 
     def _speakable_count(self) -> int:
