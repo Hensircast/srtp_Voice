@@ -24,6 +24,7 @@ from .streaming import (
     StreamEventType,
     TextChunk,
     TurnTimingSnapshot,
+    is_speakable_text,
 )
 from .streaming_asr import (
     IncrementalASRSession,
@@ -81,6 +82,7 @@ class StreamingTurnController:
         self._lock = threading.Lock()
         self._active: TurnHandle | None = None
         self._factories: Dict[str, StreamEventFactory] = {}
+        self._last_turn_snapshot: TurnTimingSnapshot | None = None
         self.late_events = 0
         self.dropped_history_events = 0
         self.sink_failures = 0
@@ -130,7 +132,10 @@ class StreamingTurnController:
         self._store_and_publish(event)
         if self.cancel_hook is not None:
             self.cancel_hook(handle.turn_id)
-        return self._tracker.finish_turn(handle.turn_id)
+        snapshot = self._tracker.finish_turn(handle.turn_id)
+        with self._lock:
+            self._last_turn_snapshot = snapshot
+        return snapshot
 
     def fail_turn(self, turn_id: str, exc: Exception) -> TurnTimingSnapshot | None:
         self.emit(
@@ -150,7 +155,10 @@ class StreamingTurnController:
                 raise TurnCancelledError(f"Turn {turn_id} was superseded before completion")
             self._active = None
             self._factories.pop(turn_id, None)
-        return self._tracker.finish_turn(turn_id)
+        snapshot = self._tracker.finish_turn(turn_id)
+        with self._lock:
+            self._last_turn_snapshot = snapshot
+        return snapshot
 
     def is_active(self, turn_id: str) -> bool:
         with self._lock:
@@ -172,6 +180,11 @@ class StreamingTurnController:
 
     def latency_summary(self) -> Dict[str, Dict[str, float | int]]:
         return self._tracker.summary()
+
+    @property
+    def last_turn_snapshot(self) -> TurnTimingSnapshot | None:
+        with self._lock:
+            return self._last_turn_snapshot
 
     def _store_and_publish(self, event: StreamEvent) -> None:
         with self._lock:
@@ -258,10 +271,29 @@ class StreamingResponseRuntime:
         sentence_parts: list[str] = []
         chunker = SentenceChunker(
             turn_id=handle.turn_id,
+            min_chars=self.cfg.stream_sentence_min_chars,
             max_chars=self.cfg.stream_sentence_max_chars,
             max_wait_seconds=self.cfg.stream_sentence_max_wait_seconds,
         )
         backpressure_start = self._tts_worker.backpressure_events
+        speech_sequence = 0
+
+        def queue_sentence(sentence: TextChunk) -> None:
+            nonlocal speech_sequence
+            sentence_parts.append(sentence.text)
+            clean_text = sentence.text.strip()
+            if not is_speakable_text(clean_text):
+                return
+            speakable = TextChunk(
+                text=clean_text,
+                is_final=sentence.is_final,
+                timestamp_ms=sentence.timestamp_ms,
+                turn_id=sentence.turn_id,
+                sequence_id=speech_sequence,
+            )
+            speech_sequence += 1
+            self._submit_sentence(handle, speakable)
+
         try:
             self.emit(handle, StreamEventType.LLM_REQUEST_STARTED)
             for token in self.generator.generate_stream(
@@ -279,17 +311,17 @@ class StreamingResponseRuntime:
                         {"text": token.text, "token_sequence": token.sequence_id},
                     )
                     for sentence in chunker.feed(token.text):
-                        sentence_parts.append(sentence.text)
-                        self._submit_sentence(handle, sentence)
+                        queue_sentence(sentence)
 
             reply_text = "".join(raw_parts)
             if not reply_text.strip():
                 raise RuntimeError("Streaming LLM produced no speakable reply text")
             for sentence in chunker.finish():
-                sentence_parts.append(sentence.text)
-                self._submit_sentence(handle, sentence)
+                queue_sentence(sentence)
             if "".join(sentence_parts) != reply_text:
                 raise RuntimeError("Sentence chunks do not reconstruct the final reply text")
+            if speech_sequence == 0:
+                raise RuntimeError("Streaming LLM produced no TTS-speakable reply text")
 
             self._tts_worker.join()
             self._raise_if_cancelled(handle)
@@ -356,6 +388,10 @@ class StreamingResponseRuntime:
     def tts_failures(self) -> tuple[StreamingTTSFailure, ...]:
         return self._tts_worker.failures
 
+    @property
+    def tts_backpressure_events(self) -> int:
+        return self._tts_worker.backpressure_events
+
     def close(self, *, drain: bool = False) -> None:
         if self._closed:
             return
@@ -368,6 +404,8 @@ class StreamingResponseRuntime:
 
     def _submit_sentence(self, handle: TurnHandle, sentence: TextChunk) -> None:
         self._raise_if_cancelled(handle)
+        if not is_speakable_text(sentence.text):
+            return
         self.emit(
             handle,
             StreamEventType.SENTENCE_READY,

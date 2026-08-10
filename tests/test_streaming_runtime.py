@@ -208,6 +208,41 @@ def test_streaming_response_without_playback_has_no_playback_events_or_metrics(
     assert "playback_duration_ms" not in result.latency.latencies_ms
 
 
+def test_streaming_response_skips_trailing_whitespace_and_coalesces_short_fragments(
+    tmp_path,
+) -> None:
+    events = []
+    tts = FakeTTS()
+    runtime = StreamingResponseRuntime(
+        _cfg(tmp_path, stream_sentence_min_chars=12),
+        FakeGenerator(["简短，", "但完整的回答。  \n", "  \n"]),
+        tts,
+        event_sink=events.append,
+        playback_enabled=False,
+        temp_parent=tmp_path,
+        id_factory=lambda: "turn-clean-chunks",
+    )
+    handle = runtime.begin_turn()
+    result = runtime.run_response(
+        handle,
+        user_text="test",
+        emotion=EmotionResult("neutral", 0.2, 0.8, {}),
+        history=[],
+        reply_audio=tmp_path / "reply.wav",
+    )
+    runtime.close()
+
+    assert result.strategy.reply_text == "简短，但完整的回答。  \n  \n"
+    assert [call[0] for call in tts.calls] == ["简短，但完整的回答。"]
+    sentence_events = [
+        event for event in events if event.event_type == StreamEventType.SENTENCE_READY
+    ]
+    assert [event.payload["text"] for event in sentence_events] == [
+        "简短，但完整的回答。"
+    ]
+    assert [event.payload["chunk_sequence"] for event in sentence_events] == [0]
+
+
 def test_streaming_tts_failure_cancels_turn_without_a_final_result(tmp_path) -> None:
     events = []
     runtime = StreamingResponseRuntime(
@@ -402,6 +437,87 @@ def test_main_streaming_turn_writes_memory_only_after_final_reply(tmp_path) -> N
     assert sum(event["event_type"] == "asr_partial" for event in events) == 0
     metrics = json.loads(paths["metrics_file"].read_text(encoding="utf-8"))
     assert metrics["last_turn"]["turn_id"] == "turn-main"
+
+
+def test_continuous_streaming_failure_persists_current_diagnostics_and_returns(
+    tmp_path,
+) -> None:
+    import main as main_module
+
+    cfg = _cfg(tmp_path, memory_file=tmp_path / "memory.json")
+    runtime = StreamingResponseRuntime(
+        cfg,
+        FakeGenerator(["失败句子。"]),
+        FakeTTS(fail=True),
+        playback_enabled=False,
+        temp_parent=tmp_path,
+        id_factory=lambda: "turn-current-failure",
+    )
+
+    class FakeSER:
+        def predict(self, path):
+            return EmotionResult("neutral", 0.2, 0.8, {})
+
+    class FakeSmoother:
+        def update(self, emotion):
+            return types.SimpleNamespace(
+                label="neutral",
+                valence=0.0,
+                arousal=0.0,
+                dominance=0.0,
+                to_dict=lambda: {"label": "neutral"},
+            )
+
+    class FakeMemory:
+        def load(self):
+            return []
+
+        def append(self, state):
+            raise AssertionError("failed turns must not be stored in memory")
+
+    fsm = DialogueStateMachine()
+    fsm.set(DialogueStage.IDLE)
+    paths = {
+        "user_audio": tmp_path / "user_input.wav",
+        "reply_audio": tmp_path / "reply.wav",
+        "action_file": tmp_path / "last_action.json",
+        "serial_packet_file": tmp_path / "serial_packet.json",
+        "state_file": tmp_path / "last_state.json",
+        "metrics_file": tmp_path / "streaming_metrics.json",
+        "events_file": tmp_path / "streaming_events.json",
+    }
+
+    main_module.run_one_streaming_turn(
+        args=argparse.Namespace(
+            mode="console",
+            audio="",
+            text="trigger failure",
+            record_seconds=1.0,
+            no_play=True,
+            continuous=True,
+            streaming=True,
+        ),
+        cfg=cfg,
+        continuous=True,
+        fsm=fsm,
+        ser=FakeSER(),
+        asr=None,
+        runtime=runtime,
+        smoother=FakeSmoother(),
+        memory=FakeMemory(),
+        **paths,
+    )
+    runtime.close()
+
+    metrics = json.loads(paths["metrics_file"].read_text(encoding="utf-8"))
+    events = json.loads(paths["events_file"].read_text(encoding="utf-8"))
+    assert metrics["failed"] is True
+    assert metrics["last_turn"]["turn_id"] == "turn-current-failure"
+    assert "tts failed" in metrics["error"]["message"]
+    assert events[-1]["event_type"] == "turn_cancelled"
+    assert any(event["event_type"] == "error" for event in events)
+    assert fsm.stage == DialogueStage.IDLE
+    assert not paths["reply_audio"].exists()
 
 
 def test_one_hundred_turn_stress_keeps_one_worker_and_bounded_queues(tmp_path) -> None:

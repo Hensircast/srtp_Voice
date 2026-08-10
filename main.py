@@ -352,10 +352,35 @@ def run_one_streaming_turn(
             print(f"      未检测到语音，继续监听；emotion_decay={decayed.label}")
         else:
             print(f"      未检测到语音，本轮结束；emotion_decay={decayed.label}")
-    except Exception:
-        runtime.cancel_current(reason="turn_failed")
+    except Exception as exc:
+        if runtime.controller.is_active(handle.turn_id):
+            runtime.controller.fail_turn(handle.turn_id, exc)
+        else:
+            runtime.cancel_current(reason="turn_failed")
         fsm.set(DialogueStage.IDLE)
         save_fsm_state(fsm, state_file)
+        snapshot = runtime.controller.last_turn_snapshot
+        diagnostics = {
+            "summary": runtime.controller.latency_summary(),
+            "late_events": runtime.controller.late_events,
+            "dropped_event_history": runtime.controller.dropped_history_events,
+            "tts_backpressure_events": runtime.tts_backpressure_events,
+            "failed": True,
+            "error": {
+                "type": type(exc).__name__,
+                "message": str(exc),
+            },
+        }
+        if snapshot is not None and snapshot.turn_id == handle.turn_id:
+            diagnostics["last_turn"] = snapshot.to_dict()
+        save_json(metrics_file, diagnostics)
+        save_json(events_file, [event.to_dict() for event in runtime.controller.history])
+        if continuous:
+            print(
+                f"      [TURN ERROR] {type(exc).__name__}: {exc}; "
+                "本轮已回到 Idle，将继续监听"
+            )
+            return
         raise
 
 

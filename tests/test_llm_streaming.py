@@ -132,6 +132,10 @@ def test_ollama_stream_parses_ndjson_across_utf8_byte_boundaries(monkeypatch) ->
     assert chunks[-1].text == ""
     assert fake_requests.payloads[0]["stream"] is True
     assert "format" not in fake_requests.payloads[0]
+    system_prompt = fake_requests.payloads[0]["messages"][0]["content"]
+    assert "不要寒暄或自我介绍" in system_prompt
+    assert "不要照搬上一轮的固定开场、结尾或格式要求" in system_prompt
+    assert "不要输出换行、Markdown 换行或列表符号" in system_prompt
     assert StrategyGenerator.default_stream_action()["expression"] == "neutral_smile"
     assert fake_requests.post_calls[0][2] is True
     assert response.closed is True

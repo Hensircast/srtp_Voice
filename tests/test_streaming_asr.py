@@ -222,6 +222,7 @@ def test_streaming_config_defaults_and_bounds(monkeypatch) -> None:
     names = [
         "STREAM_AUDIO_QUEUE_SIZE",
         "STREAM_TTS_QUEUE_SIZE",
+        "STREAM_SENTENCE_MIN_CHARS",
         "STREAM_SENTENCE_MAX_CHARS",
         "STREAM_SENTENCE_MAX_WAIT_SECONDS",
         "STREAM_ASR_PARTIAL_INTERVAL_SECONDS",
@@ -234,6 +235,7 @@ def test_streaming_config_defaults_and_bounds(monkeypatch) -> None:
     cfg = AppConfig.from_env()
     assert cfg.stream_audio_queue_size == 32
     assert cfg.stream_tts_queue_size == 4
+    assert cfg.stream_sentence_min_chars == 12
     assert cfg.stream_sentence_max_chars == 80
     assert cfg.stream_sentence_max_wait_seconds == 0.8
     assert cfg.stream_asr_partial_interval_seconds == 0.8
@@ -241,6 +243,7 @@ def test_streaming_config_defaults_and_bounds(monkeypatch) -> None:
 
     monkeypatch.setenv("STREAM_AUDIO_QUEUE_SIZE", "0")
     monkeypatch.setenv("STREAM_TTS_QUEUE_SIZE", "999")
+    monkeypatch.setenv("STREAM_SENTENCE_MIN_CHARS", "0")
     monkeypatch.setenv("STREAM_SENTENCE_MAX_CHARS", "invalid")
     monkeypatch.setenv("STREAM_SENTENCE_MAX_WAIT_SECONDS", "0")
     monkeypatch.setenv("STREAM_ASR_PARTIAL_INTERVAL_SECONDS", "nan")
@@ -249,6 +252,7 @@ def test_streaming_config_defaults_and_bounds(monkeypatch) -> None:
 
     assert cfg.stream_audio_queue_size == 1
     assert cfg.stream_tts_queue_size == 256
+    assert cfg.stream_sentence_min_chars == 1
     assert cfg.stream_sentence_max_chars == 80
     assert cfg.stream_sentence_max_wait_seconds == 0.01
     assert cfg.stream_asr_partial_interval_seconds == 0.8

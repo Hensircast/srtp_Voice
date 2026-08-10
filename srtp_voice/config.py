@@ -139,6 +139,7 @@ class AppConfig:
     # V1.8 streaming is opt-in at the CLI; these bound callback and worker queues.
     stream_audio_queue_size: int = 32
     stream_tts_queue_size: int = 4
+    stream_sentence_min_chars: int = 12
     stream_sentence_max_chars: int = 80
     stream_sentence_max_wait_seconds: float = 0.8
     stream_asr_partial_interval_seconds: float = 0.8
@@ -224,6 +225,9 @@ class AppConfig:
             ),
             stream_tts_queue_size=env_bounded_int(
                 "STREAM_TTS_QUEUE_SIZE", 4, 1, 256
+            ),
+            stream_sentence_min_chars=env_bounded_int(
+                "STREAM_SENTENCE_MIN_CHARS", 12, 1, 1000
             ),
             stream_sentence_max_chars=env_bounded_int(
                 "STREAM_SENTENCE_MAX_CHARS", 80, 1, 10000

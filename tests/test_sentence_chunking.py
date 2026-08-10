@@ -73,6 +73,35 @@ def test_sentence_chunker_flushes_after_max_wait() -> None:
     assert chunker.buffered_text == ""
 
 
+def test_sentence_chunker_coalesces_short_soft_punctuation_fragments() -> None:
+    source = "你好，我是语音助手。推荐三道菜：凉拌黄瓜、番茄炒蛋和冬瓜汤，都很清爽。"
+    chunker = SentenceChunker(min_chars=12, max_chars=100)
+
+    chunks = chunker.feed(source, now=5.0) + chunker.finish(now=5.1)
+
+    assert _texts(chunks) == [
+        "你好，我是语音助手。",
+        "推荐三道菜：凉拌黄瓜、番茄炒蛋和冬瓜汤，",
+        "都很清爽。",
+    ]
+    assert "".join(_texts(chunks)) == source
+
+
+def test_sentence_chunker_does_not_timeout_flush_whitespace_or_tiny_text() -> None:
+    chunker = SentenceChunker(
+        min_chars=4,
+        max_chars=100,
+        max_wait_seconds=0.5,
+    )
+
+    assert chunker.feed("  \n", now=6.0) == []
+    assert chunker.flush_due(now=7.0) == []
+    assert chunker.feed("答案。", now=7.1) == []
+    chunks = chunker.finish(now=7.2)
+
+    assert _texts(chunks) == ["  \n答案。"]
+
+
 def test_sentence_chunker_preserves_every_character_across_token_boundaries() -> None:
     tokens = ["第", "一句。第", "二句（含", "括号）！", "尾巴没有标点"]
     source = "".join(tokens)
@@ -90,6 +119,8 @@ def test_sentence_chunker_preserves_every_character_across_token_boundaries() ->
 def test_sentence_chunker_rejects_invalid_limits_and_clock_regression() -> None:
     with pytest.raises(ValueError, match="at least 1"):
         SentenceChunker(max_chars=0)
+    with pytest.raises(ValueError, match="min_chars"):
+        SentenceChunker(min_chars=0)
     with pytest.raises(ValueError, match="greater than zero"):
         SentenceChunker(max_wait_seconds=0)
 

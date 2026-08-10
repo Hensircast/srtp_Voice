@@ -314,8 +314,16 @@ class LatencyTracker:
             return result
 
 
-_SENTENCE_PUNCTUATION = frozenset("。！？；：，、….!?;,:")
+_SENTENCE_HARD_PUNCTUATION = frozenset("。！？；….!?;")
+_SENTENCE_SOFT_PUNCTUATION = frozenset("：，、,:")
+_SENTENCE_PUNCTUATION = _SENTENCE_HARD_PUNCTUATION | _SENTENCE_SOFT_PUNCTUATION
 _SENTENCE_CLOSERS = frozenset("”’\"'）)]】}》〉」』")
+
+
+def is_speakable_text(text: str) -> bool:
+    """Return whether text contains at least one letter or number for TTS."""
+
+    return isinstance(text, str) and any(character.isalnum() for character in text)
 
 
 class SentenceChunker:
@@ -325,10 +333,15 @@ class SentenceChunker:
         self,
         *,
         turn_id: str = "",
+        min_chars: int = 1,
         max_chars: int = 80,
         max_wait_seconds: float = 0.8,
         clock: Callable[[], float] | None = None,
     ) -> None:
+        if isinstance(min_chars, bool) or not isinstance(min_chars, int):
+            raise TypeError("min_chars must be an integer")
+        if min_chars < 1:
+            raise ValueError("min_chars must be at least 1")
         if isinstance(max_chars, bool) or not isinstance(max_chars, int):
             raise TypeError("max_chars must be an integer")
         if max_chars < 1:
@@ -340,6 +353,7 @@ class SentenceChunker:
         if not isfinite(max_wait_seconds) or max_wait_seconds <= 0:
             raise ValueError("max_wait_seconds must be finite and greater than zero")
         self.turn_id = turn_id
+        self.min_chars = min_chars
         self.max_chars = max_chars
         self.max_wait_seconds = float(max_wait_seconds)
         self._clock = clock or monotonic
@@ -367,8 +381,10 @@ class SentenceChunker:
                 self._buffer_started_at = timestamp
             self._buffer.append(character)
 
-            if character in _SENTENCE_PUNCTUATION:
+            if character in _SENTENCE_HARD_PUNCTUATION:
                 self._pending_boundary = True
+            elif character in _SENTENCE_SOFT_PUNCTUATION:
+                self._pending_boundary = self._speakable_count() >= self.min_chars
             elif self._pending_boundary and character in _SENTENCE_CLOSERS:
                 pass
             else:
@@ -397,6 +413,7 @@ class SentenceChunker:
             self._buffer
             and self._buffer_started_at is not None
             and timestamp - self._buffer_started_at >= self.max_wait_seconds
+            and self._speakable_count() >= self.min_chars
         ):
             return [self._emit(timestamp)]
         return []
@@ -417,6 +434,9 @@ class SentenceChunker:
         self._buffer_started_at = None
         self._pending_boundary = False
         return chunk
+
+    def _speakable_count(self) -> int:
+        return sum(character.isalnum() for character in self._buffer)
 
     def _now(self, value: float | None) -> float:
         timestamp = float(self._clock() if value is None else value)

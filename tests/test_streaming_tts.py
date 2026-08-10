@@ -157,7 +157,7 @@ def test_cancellation_after_synthesis_skips_playback_and_cleans_file(tmp_path) -
     assert not generated_path.exists()
 
 
-def test_worker_records_failure_and_continues_with_next_chunk(tmp_path) -> None:
+def test_worker_failure_skips_remaining_turn_but_continues_next_turn(tmp_path) -> None:
     synthesizer = FakeSynthesizer(fail_text="bad")
     played = []
     errors = []
@@ -170,6 +170,7 @@ def test_worker_records_failure_and_continues_with_next_chunk(tmp_path) -> None:
     worker.start()
     assert worker.submit(TextChunk("bad", turn_id="turn-1", sequence_id=0))
     assert worker.submit(TextChunk("good", turn_id="turn-1", sequence_id=1))
+    assert worker.submit(TextChunk("next", turn_id="turn-2", sequence_id=0))
     worker.join()
     worker.close()
 
@@ -178,7 +179,22 @@ def test_worker_records_failure_and_continues_with_next_chunk(tmp_path) -> None:
     assert errors[0].sequence == 0
     assert "synthetic failure" in str(errors[0].error)
     assert len(worker.failures) == 1
+    assert [call[0] for call in synthesizer.calls] == ["bad", "next"]
     assert played == ["chunk-00000001.wav"]
+
+
+def test_worker_ignores_whitespace_and_punctuation_only_chunks(tmp_path) -> None:
+    synthesizer = FakeSynthesizer()
+    worker = IncrementalTTSPlayer(synthesizer, temp_parent=tmp_path)
+
+    assert worker.submit(TextChunk("  \n", turn_id="turn-1", sequence_id=0))
+    assert worker.submit(TextChunk("……！？", turn_id="turn-1", sequence_id=1))
+    worker.start()
+    worker.join()
+    worker.close()
+
+    assert synthesizer.calls == []
+    assert worker.failures == ()
 
 
 def test_cancel_turn_stops_active_cancellable_playback(tmp_path) -> None:

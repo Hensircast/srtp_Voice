@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Protocol
 
 from .lip_sync import build_energy_lip_sync
-from .streaming import AudioChunk, TextChunk
+from .streaming import AudioChunk, TextChunk, is_speakable_text
 
 
 class SentenceSynthesizer(Protocol):
@@ -180,7 +180,7 @@ class IncrementalTTSPlayer:
     ) -> bool:
         if not isinstance(chunk, TextChunk):
             raise TypeError("submit requires a TextChunk")
-        if not chunk.text:
+        if not is_speakable_text(chunk.text):
             return True
         with self._lock:
             if self._closed:
@@ -316,6 +316,7 @@ class IncrementalTTSPlayer:
             failure = StreamingTTSFailure(chunk.turn_id, chunk.sequence_id, exc)
             with self._lock:
                 self._failures.append(failure)
+            self.cancel_turn(chunk.turn_id)
             if self.on_error is not None:
                 self.on_error(failure)
         finally:
