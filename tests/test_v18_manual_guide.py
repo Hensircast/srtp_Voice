@@ -34,6 +34,14 @@ def test_v18_manual_guide_covers_required_real_device_checks() -> None:
     )
     assert all(value in text for value in required)
     assert "```bash" not in text
+    json_reads = [
+        line for line in text.splitlines()
+        if "Get-Content" in line and ".json" in line
+    ]
+    assert json_reads
+    assert all("-Encoding UTF8" in line for line in json_reads)
+    assert "stability-memory.json" in text
+    assert "failed=true" in text
 
 
 def test_v18_manual_outputs_remain_gitignored() -> None:

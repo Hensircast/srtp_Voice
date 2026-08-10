@@ -229,6 +229,7 @@ SenseVoice 初始化使用本地模型、`disable_update=True` 和 `disable_pbar
 | --- | --- | --- |
 | `STREAM_AUDIO_QUEUE_SIZE` | `32` | 麦克风 callback 到处理线程的 PCM 帧队列上限；满时丢弃最新帧并计数 |
 | `STREAM_TTS_QUEUE_SIZE` | `4` | 待合成/播放句子队列上限；运行时使用阻塞背压保证句子不丢失 |
+| `STREAM_SENTENCE_MIN_CHARS` | `12` | 软标点/等待兜底切分前的最少可发音字符数，避免过短碎片 |
 | `STREAM_SENTENCE_MAX_CHARS` | `80` | 无标点长文本的强制切分字符数 |
 | `STREAM_SENTENCE_MAX_WAIT_SECONDS` | `0.8` | 已缓存文本的等待兜底；新 token 或流结束时检查 |
 | `STREAM_ASR_PARTIAL_INTERVAL_SECONDS` | `0.8` | faster-whisper PCM 快照 partial 的最小调度间隔 |
@@ -371,6 +372,8 @@ python main.py --diagnose
 `--no-play` 只跳过回复 WAV 播放，不跳过 TTS、唇动、动作文件或记忆写入。`--text` 直接提供当前轮用户文本并绕过 ASR；同步路径仍按所选音频模式采集或读取音频，V1.8 流式路径在 `mic/vad` 与 `--text` 同时出现时使用文本调试路径而不打开麦克风。
 
 `--streaming` 不会隐式启用。Ollama 使用 `stream=true` 并解析 UTF-8 NDJSON；纯文本先输出，动作使用确定性兼容默认值，因此结构化 action 不阻塞首 token。每轮只把 final ASR 和最终 reply 写入记忆。按 `Ctrl+C` 会取消当前 turn、停止可取消播放、丢弃旧 turn 的迟到事件并关闭工作线程。没有回声消除时请优先使用耳机；自动语音 barge-in 当前保持关闭。
+
+流式 TTS 对句号、问号、感叹号等强边界立即切分；逗号、顿号和冒号等软边界达到 `STREAM_SENTENCE_MIN_CHARS` 后才切分。纯空白/纯标点块不会进入 TTS，chunk 序号保持连续；静音 WAV 的唇动归一化安全输出最小开口值。continuous 模式的单轮后端失败会写入当前轮 events/metrics、恢复 Idle 并继续监听。
 
 `--diagnose` 在输出目录和完整工作流对象初始化之前返回。它不会录音、播放、加载 SenseVoice 或 faster-whisper、调用 Ollama/Piper/edge-tts、创建 `outputs`，也不会输出 API key、Token 或完整环境变量。
 
@@ -532,7 +535,7 @@ Windows 和 Ubuntu CI 使用相同的离线测试命令，不加载真实模型�
 - faster-whisper 没有在本项目中维护原生增量解码器状态；V1.8 partial 来自非 callback 线程中的增长 PCM 快照，final 仍对完整语句重新识别。
 - 只有 Ollama 在 V1.8 中使用真实 token 流；mock、LM Studio 和默认同步接口保留整段兼容输出。
 - V1.8 文本流与 action 决策分离，流式 action 使用确定性默认值；需要模型生成完整结构化动作时使用默认同步路径。
-- `STREAM_SENTENCE_MAX_WAIT_SECONDS` 的检查由新 token、显式轮询或流结束触发；底层 HTTP 长时间没有任何字节时仍受 `LLM_TIMEOUT_SECONDS` 约束。
+- `STREAM_SENTENCE_MAX_WAIT_SECONDS` 的检查由新 token、显式轮询或流结束触发，并受 `STREAM_SENTENCE_MIN_CHARS` 约束；底层 HTTP 长时间没有任何字节时仍受 `LLM_TIMEOUT_SECONDS` 约束。
 - 自动语音 barge-in 默认关闭；当前已支持 turn 取消和活动播放停止，但没有回声消除，扬声器回采可能被误识别。
 - continuous 是同一 Python 进程内的同步循环，不是 FastAPI、HTTP 服务或后台进程。
 - 唇动是短时能量近似，不是音素、viseme 或视觉嘴形追踪。

@@ -93,6 +93,7 @@ def test_readme_documents_v18_streaming_boundaries_and_outputs() -> None:
     for setting in (
         "STREAM_AUDIO_QUEUE_SIZE",
         "STREAM_TTS_QUEUE_SIZE",
+        "STREAM_SENTENCE_MIN_CHARS",
         "STREAM_SENTENCE_MAX_CHARS",
         "STREAM_SENTENCE_MAX_WAIT_SECONDS",
         "STREAM_ASR_PARTIAL_INTERVAL_SECONDS",
