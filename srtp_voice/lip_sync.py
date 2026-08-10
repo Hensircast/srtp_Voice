@@ -47,7 +47,7 @@ def generate_lip_sync_from_wav(
         rms = math.sqrt(sum(s * s for s in frame) / len(frame)) / 32768.0
         rms_values.append(rms)
 
-    peak = max(rms_values) if rms_values else 1e-6
+    peak = max(max(rms_values, default=0.0), 1e-6)
     frames = []
 
     for idx, rms in enumerate(rms_values):
