@@ -118,10 +118,17 @@ class StreamingTurnController:
         self._store_and_publish(event)
         return event
 
-    def cancel_active(self, *, reason: str = "cancelled") -> TurnTimingSnapshot | None:
+    def cancel_active(
+        self,
+        *,
+        reason: str = "cancelled",
+        expected_turn_id: str | None = None,
+    ) -> TurnTimingSnapshot | None:
         with self._lock:
             handle = self._active
             if handle is None:
+                return None
+            if expected_turn_id is not None and handle.turn_id != expected_turn_id:
                 return None
             factory = self._factories[handle.turn_id]
             handle.cancelled.set()
@@ -138,12 +145,14 @@ class StreamingTurnController:
         return snapshot
 
     def fail_turn(self, turn_id: str, exc: Exception) -> TurnTimingSnapshot | None:
-        self.emit(
+        event = self.emit(
             turn_id,
             StreamEventType.ERROR,
             {"error_type": type(exc).__name__, "message": str(exc)},
         )
-        return self.cancel_active(reason="error")
+        if event is None:
+            return None
+        return self.cancel_active(reason="error", expected_turn_id=turn_id)
 
     def finish_turn(self, turn_id: str) -> TurnTimingSnapshot:
         event = self.emit(turn_id, StreamEventType.TURN_FINISHED)

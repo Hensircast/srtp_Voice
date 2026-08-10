@@ -105,6 +105,26 @@ def test_turn_controller_cancels_old_turn_and_drops_late_events() -> None:
     )
 
 
+def test_stale_turn_failure_does_not_cancel_the_current_turn() -> None:
+    ids = iter(["turn-old", "turn-current"])
+    cancelled = []
+    controller = StreamingTurnController(
+        id_factory=lambda: next(ids),
+        cancel_hook=cancelled.append,
+    )
+
+    old = controller.start_turn()
+    current = controller.start_turn()
+
+    snapshot = controller.fail_turn(old.turn_id, RuntimeError("late failure"))
+
+    assert snapshot is None
+    assert controller.is_active(current.turn_id)
+    assert not current.cancelled.is_set()
+    assert cancelled == [old.turn_id]
+    controller.finish_turn(current.turn_id)
+
+
 def test_turn_event_history_is_bounded() -> None:
     controller = StreamingTurnController(
         id_factory=lambda: "turn-1",
