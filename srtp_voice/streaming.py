@@ -361,6 +361,7 @@ class SentenceChunker:
         self._buffer_started_at: float | None = None
         self._last_now: float | None = None
         self._pending_boundary = False
+        self._pending_hard_boundary = False
         self._next_sequence = 0
 
     def feed(self, text: str, *, now: float | None = None) -> list[TextChunk]:
@@ -383,12 +384,15 @@ class SentenceChunker:
 
             if character in _SENTENCE_HARD_PUNCTUATION:
                 self._pending_boundary = True
+                self._pending_hard_boundary = True
             elif character in _SENTENCE_SOFT_PUNCTUATION:
                 self._pending_boundary = self._speakable_count() >= self.min_chars
+                self._pending_hard_boundary = False
             elif self._pending_boundary and character in _SENTENCE_CLOSERS:
                 pass
             else:
                 self._pending_boundary = False
+                self._pending_hard_boundary = False
 
             if len(self._buffer) >= self.max_chars and not self._pending_boundary:
                 chunks.append(self._emit(timestamp))
@@ -408,12 +412,30 @@ class SentenceChunker:
     def buffered_text(self) -> str:
         return "".join(self._buffer)
 
+    def peek_pending_hard_boundary(self) -> TextChunk | None:
+        """Preview a complete hard-boundary sentence without consuming closers."""
+
+        if (
+            not self._buffer
+            or not self._pending_boundary
+            or not self._pending_hard_boundary
+            or self._last_now is None
+        ):
+            return None
+        return TextChunk(
+            text="".join(self._buffer),
+            timestamp_ms=int(self._last_now * 1000),
+            turn_id=self.turn_id,
+            sequence_id=self._next_sequence,
+        )
+
     def _flush_due_at(self, timestamp: float) -> list[TextChunk]:
         if (
             self._buffer
             and self._buffer_started_at is not None
             and timestamp - self._buffer_started_at >= self.max_wait_seconds
             and self._speakable_count() >= self.min_chars
+            and not self._pending_hard_boundary
         ):
             return [self._emit(timestamp)]
         return []
@@ -433,6 +455,7 @@ class SentenceChunker:
         self._buffer.clear()
         self._buffer_started_at = None
         self._pending_boundary = False
+        self._pending_hard_boundary = False
         return chunk
 
     def _speakable_count(self) -> int:

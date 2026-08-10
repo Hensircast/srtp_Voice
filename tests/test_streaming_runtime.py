@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import struct
+import threading
 import types
 import wave
 
@@ -125,6 +126,47 @@ def test_stale_turn_failure_does_not_cancel_the_current_turn() -> None:
     controller.finish_turn(current.turn_id)
 
 
+def test_turn_controller_observes_concurrent_events_in_sequence_order() -> None:
+    controller = StreamingTurnController(id_factory=lambda: "turn-concurrent")
+    handle = controller.start_turn()
+    original_observe = controller._tracker.observe
+    first_observe_started = threading.Event()
+    second_observed = threading.Event()
+    observed_sequences = []
+    errors = []
+
+    def observe(event):
+        if event.sequence == 1:
+            first_observe_started.set()
+            second_observed.wait(timeout=0.2)
+        elif event.sequence == 2:
+            second_observed.set()
+        original_observe(event)
+        observed_sequences.append(event.sequence)
+
+    controller._tracker.observe = observe
+
+    def emit(event_type):
+        try:
+            controller.emit(handle.turn_id, event_type)
+        except Exception as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    first = threading.Thread(target=emit, args=(StreamEventType.VAD_STARTED,))
+    second = threading.Thread(target=emit, args=(StreamEventType.LLM_TOKEN,))
+    first.start()
+    assert first_observe_started.wait(timeout=1)
+    second.start()
+    first.join(timeout=1)
+    second.join(timeout=1)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert errors == []
+    assert observed_sequences == [1, 2]
+    controller.finish_turn(handle.turn_id)
+
+
 def test_turn_event_history_is_bounded() -> None:
     controller = StreamingTurnController(
         id_factory=lambda: "turn-1",
@@ -192,6 +234,68 @@ def test_streaming_response_reconstructs_text_and_combines_audio(tmp_path) -> No
         assert required in event_types
     assert [event.sequence for event in events] == list(range(len(events)))
     assert result.latency.latencies_ms["turn_total_ms"] >= 0
+
+
+def test_streaming_response_previews_hard_boundary_before_next_token(tmp_path) -> None:
+    release_next_token = threading.Event()
+    first_tts_started = threading.Event()
+    errors = []
+    result_box = []
+
+    class BlockingGenerator:
+        def generate_stream(self, user_text, emotion, history, *, turn_id=""):
+            yield TextChunk("你好！", turn_id=turn_id, sequence_id=0)
+            assert release_next_token.wait(timeout=2)
+            yield TextChunk("”然后。", turn_id=turn_id, sequence_id=1)
+
+        @staticmethod
+        def default_stream_action():
+            return {"expression": "neutral_smile"}
+
+    class SignallingTTS(FakeTTS):
+        def synthesize(self, text, path):
+            super().synthesize(text, path)
+            if len(self.calls) == 1:
+                first_tts_started.set()
+
+    tts = SignallingTTS()
+    runtime = StreamingResponseRuntime(
+        _cfg(tmp_path),
+        BlockingGenerator(),
+        tts,
+        playback_enabled=False,
+        temp_parent=tmp_path,
+        id_factory=lambda: "turn-preview",
+    )
+    handle = runtime.begin_turn()
+
+    def run_response():
+        try:
+            result_box.append(
+                runtime.run_response(
+                    handle,
+                    user_text="test",
+                    emotion=EmotionResult("neutral", 0.2, 0.8, {}),
+                    history=[],
+                    reply_audio=tmp_path / "reply.wav",
+                )
+            )
+        except Exception as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    response_thread = threading.Thread(target=run_response)
+    response_thread.start()
+    try:
+        assert first_tts_started.wait(timeout=1)
+    finally:
+        release_next_token.set()
+    response_thread.join(timeout=2)
+    runtime.close()
+
+    assert not response_thread.is_alive()
+    assert errors == []
+    assert result_box[0].strategy.reply_text == "你好！”然后。"
+    assert [call[0] for call in tts.calls] == ["你好！", "然后。"]
 
 
 def test_streaming_response_without_playback_has_no_playback_events_or_metrics(

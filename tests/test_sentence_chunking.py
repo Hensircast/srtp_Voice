@@ -73,6 +73,23 @@ def test_sentence_chunker_flushes_after_max_wait() -> None:
     assert chunker.buffered_text == ""
 
 
+def test_sentence_chunker_previews_hard_boundary_without_consuming_closers() -> None:
+    chunker = SentenceChunker(max_chars=100, max_wait_seconds=10.0)
+
+    chunks = chunker.feed("第一句。", now=5.0)
+    preview = chunker.peek_pending_hard_boundary()
+
+    assert chunks == []
+    assert preview is not None
+    assert preview.text == "第一句。"
+    assert preview.sequence_id == 0
+    assert chunker.buffered_text == "第一句。"
+
+    chunks = chunker.feed("”下一句", now=5.1)
+    assert _texts(chunks) == ["第一句。”"]
+    assert chunker.buffered_text == "下一句"
+
+
 def test_sentence_chunker_coalesces_short_soft_punctuation_fragments() -> None:
     source = "你好，我是语音助手。推荐三道菜：凉拌黄瓜、番茄炒蛋和冬瓜汤，都很清爽。"
     chunker = SentenceChunker(min_chars=12, max_chars=100)
