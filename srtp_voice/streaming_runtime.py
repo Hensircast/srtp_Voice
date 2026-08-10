@@ -286,13 +286,13 @@ class StreamingResponseRuntime:
         )
         backpressure_start = self._tts_worker.backpressure_events
         speech_sequence = 0
+        previewed_sentence_sequences: set[int] = set()
 
-        def queue_sentence(sentence: TextChunk) -> None:
+        def submit_speech(sentence: TextChunk) -> bool:
             nonlocal speech_sequence
-            sentence_parts.append(sentence.text)
             clean_text = sentence.text.strip()
             if not is_speakable_text(clean_text):
-                return
+                return False
             speakable = TextChunk(
                 text=clean_text,
                 is_final=sentence.is_final,
@@ -302,6 +302,19 @@ class StreamingResponseRuntime:
             )
             speech_sequence += 1
             self._submit_sentence(handle, speakable)
+            return True
+
+        def queue_sentence(sentence: TextChunk) -> None:
+            sentence_parts.append(sentence.text)
+            if sentence.sequence_id in previewed_sentence_sequences:
+                return
+            submit_speech(sentence)
+
+        def queue_hard_boundary_preview(sentence: TextChunk) -> None:
+            if sentence.sequence_id in previewed_sentence_sequences:
+                return
+            if submit_speech(sentence):
+                previewed_sentence_sequences.add(sentence.sequence_id)
 
         try:
             self.emit(handle, StreamEventType.LLM_REQUEST_STARTED)
@@ -321,6 +334,9 @@ class StreamingResponseRuntime:
                     )
                     for sentence in chunker.feed(token.text):
                         queue_sentence(sentence)
+                    preview = chunker.peek_pending_hard_boundary()
+                    if preview is not None:
+                        queue_hard_boundary_preview(preview)
 
             reply_text = "".join(raw_parts)
             if not reply_text.strip():

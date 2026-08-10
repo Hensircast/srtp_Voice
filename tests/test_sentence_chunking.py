@@ -27,12 +27,16 @@ def test_sentence_chunker_splits_chinese_and_english_punctuation_losslessly() ->
     assert "".join(_texts(chunks)) == source
     assert [chunk.sequence_id for chunk in chunks] == list(range(len(chunks)))
     assert all(chunk.turn_id == "turn-1" for chunk in chunks)
-    assert chunks[-1].is_final is False
+    assert chunks[-1].is_final is True
 
 
 def test_sentence_chunker_keeps_closing_quotes_and_brackets_with_punctuation() -> None:
     chunker = SentenceChunker(max_chars=100)
-    chunks = chunker.feed("你好！”然后（真的？）好。", now=2.0)
+    chunks = []
+    chunks.extend(chunker.feed("你好！", now=2.0))
+    chunks.extend(chunker.feed("”然后（真的？", now=2.1))
+    chunks.extend(chunker.feed("）好。", now=2.2))
+    chunks.extend(chunker.finish(now=2.3))
 
     assert _texts(chunks) == ["你好！”", "然后（真的？）", "好。"]
 
@@ -69,14 +73,21 @@ def test_sentence_chunker_flushes_after_max_wait() -> None:
     assert chunker.buffered_text == ""
 
 
-def test_sentence_chunker_emits_hard_boundary_at_end_of_feed() -> None:
+def test_sentence_chunker_previews_hard_boundary_without_consuming_closers() -> None:
     chunker = SentenceChunker(max_chars=100, max_wait_seconds=10.0)
 
     chunks = chunker.feed("第一句。", now=5.0)
+    preview = chunker.peek_pending_hard_boundary()
 
-    assert _texts(chunks) == ["第一句。"]
-    assert chunker.buffered_text == ""
-    assert chunker.finish(now=5.1) == []
+    assert chunks == []
+    assert preview is not None
+    assert preview.text == "第一句。"
+    assert preview.sequence_id == 0
+    assert chunker.buffered_text == "第一句。"
+
+    chunks = chunker.feed("”下一句", now=5.1)
+    assert _texts(chunks) == ["第一句。”"]
+    assert chunker.buffered_text == "下一句"
 
 
 def test_sentence_chunker_coalesces_short_soft_punctuation_fragments() -> None:
@@ -102,9 +113,10 @@ def test_sentence_chunker_does_not_timeout_flush_whitespace_or_tiny_text() -> No
 
     assert chunker.feed("  \n", now=6.0) == []
     assert chunker.flush_due(now=7.0) == []
-    chunks = chunker.finish(now=7.1)
+    assert chunker.feed("答案。", now=7.1) == []
+    chunks = chunker.finish(now=7.2)
 
-    assert _texts(chunks) == ["  \n"]
+    assert _texts(chunks) == ["  \n答案。"]
 
 
 def test_sentence_chunker_preserves_every_character_across_token_boundaries() -> None:

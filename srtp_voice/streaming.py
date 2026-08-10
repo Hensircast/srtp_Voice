@@ -397,8 +397,6 @@ class SentenceChunker:
             if len(self._buffer) >= self.max_chars and not self._pending_boundary:
                 chunks.append(self._emit(timestamp))
 
-        if self._pending_boundary and self._pending_hard_boundary:
-            chunks.append(self._emit(timestamp))
         return chunks
 
     def flush_due(self, *, now: float | None = None) -> list[TextChunk]:
@@ -414,12 +412,30 @@ class SentenceChunker:
     def buffered_text(self) -> str:
         return "".join(self._buffer)
 
+    def peek_pending_hard_boundary(self) -> TextChunk | None:
+        """Preview a complete hard-boundary sentence without consuming closers."""
+
+        if (
+            not self._buffer
+            or not self._pending_boundary
+            or not self._pending_hard_boundary
+            or self._last_now is None
+        ):
+            return None
+        return TextChunk(
+            text="".join(self._buffer),
+            timestamp_ms=int(self._last_now * 1000),
+            turn_id=self.turn_id,
+            sequence_id=self._next_sequence,
+        )
+
     def _flush_due_at(self, timestamp: float) -> list[TextChunk]:
         if (
             self._buffer
             and self._buffer_started_at is not None
             and timestamp - self._buffer_started_at >= self.max_wait_seconds
             and self._speakable_count() >= self.min_chars
+            and not self._pending_hard_boundary
         ):
             return [self._emit(timestamp)]
         return []
