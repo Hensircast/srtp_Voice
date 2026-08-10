@@ -390,6 +390,8 @@ python main.py --diagnose
 | `outputs/memory.json` | 最近若干轮对话记忆 |
 | `outputs/streaming_events.json` | V1.8 有界事件历史，含 turn/sequence/单调 timestamp |
 | `outputs/streaming_metrics.json` | V1.8 最近一轮时延与滚动 count/min/p50/p95/max |
+| `outputs/streaming_failure_events.json` | 最近一次失败轮次的持久事件快照，不被后续成功轮次或 Ctrl+C 覆盖 |
+| `outputs/streaming_failure_metrics.json` | 最近一次失败轮次的错误、当前 turn 时延与汇总快照 |
 
 continuous 模式继续覆盖这些当前轮文件，不为每轮创建新目录。
 

@@ -28,6 +28,8 @@ def test_v18_manual_guide_covers_required_real_device_checks() -> None:
         "失败恢复",
         "streaming_events.json",
         "streaming_metrics.json",
+        "streaming_failure_events.json",
+        "streaming_failure_metrics.json",
         "通过/失败判定",
         "最小日志范围",
         "安全终止",

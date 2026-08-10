@@ -102,6 +102,8 @@ def test_readme_documents_v18_streaming_boundaries_and_outputs() -> None:
         assert setting in text
     assert "outputs/streaming_events.json" in text
     assert "outputs/streaming_metrics.json" in text
+    assert "outputs/streaming_failure_events.json" in text
+    assert "outputs/streaming_failure_metrics.json" in text
     assert "partial 来自非 callback 线程" in text
     assert "自动语音 barge-in 默认关闭" in text
     assert "默认同步路径" in text

@@ -373,8 +373,17 @@ def run_one_streaming_turn(
         }
         if snapshot is not None and snapshot.turn_id == handle.turn_id:
             diagnostics["last_turn"] = snapshot.to_dict()
+        serialized_events = [event.to_dict() for event in runtime.controller.history]
         save_json(metrics_file, diagnostics)
-        save_json(events_file, [event.to_dict() for event in runtime.controller.history])
+        save_json(events_file, serialized_events)
+        save_json(
+            metrics_file.with_name("streaming_failure_metrics.json"),
+            diagnostics,
+        )
+        save_json(
+            events_file.with_name("streaming_failure_events.json"),
+            serialized_events,
+        )
         if continuous:
             print(
                 f"      [TURN ERROR] {type(exc).__name__}: {exc}; "

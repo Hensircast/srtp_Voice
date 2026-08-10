@@ -511,11 +511,19 @@ def test_continuous_streaming_failure_persists_current_diagnostics_and_returns(
 
     metrics = json.loads(paths["metrics_file"].read_text(encoding="utf-8"))
     events = json.loads(paths["events_file"].read_text(encoding="utf-8"))
+    failure_metrics = json.loads(
+        (tmp_path / "streaming_failure_metrics.json").read_text(encoding="utf-8")
+    )
+    failure_events = json.loads(
+        (tmp_path / "streaming_failure_events.json").read_text(encoding="utf-8")
+    )
     assert metrics["failed"] is True
     assert metrics["last_turn"]["turn_id"] == "turn-current-failure"
     assert "tts failed" in metrics["error"]["message"]
     assert events[-1]["event_type"] == "turn_cancelled"
     assert any(event["event_type"] == "error" for event in events)
+    assert failure_metrics == metrics
+    assert failure_events == events
     assert fsm.stage == DialogueStage.IDLE
     assert not paths["reply_audio"].exists()
 
