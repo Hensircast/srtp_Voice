@@ -166,6 +166,8 @@ class IncrementalTTSPlayer:
         self._cancelled_turn_limit = max(256, queue_maxsize * 4)
         self._failures: deque[StreamingTTSFailure] = deque(maxlen=256)
         self._lock = threading.Lock()
+        self._player_stop_condition = threading.Condition(self._lock)
+        self._player_stop_calls_in_progress = 0
         self._thread: threading.Thread | None = None
         self._closed = False
         self._file_sequence = 0
@@ -227,10 +229,20 @@ class IncrementalTTSPlayer:
                     self._cancelled_turns.discard(expired)
                 self._cancelled_turns.add(turn_id)
                 self._cancelled_turn_order.append(turn_id)
-            if self._active_turn_id == turn_id:
-                stop = getattr(self.player, "stop", None)
-                if callable(stop):
-                    stop()
+            stop = (
+                getattr(self.player, "stop", None)
+                if self._active_turn_id == turn_id
+                else None
+            )
+            if callable(stop):
+                self._player_stop_calls_in_progress += 1
+        if callable(stop):
+            try:
+                stop()
+            finally:
+                with self._player_stop_condition:
+                    self._player_stop_calls_in_progress -= 1
+                    self._player_stop_condition.notify_all()
 
     def join(self) -> None:
         self._queue.join()
@@ -323,7 +335,9 @@ class IncrementalTTSPlayer:
                     self.on_playback_started(result)
                 self.player(wav_path)
             finally:
-                with self._lock:
+                with self._player_stop_condition:
+                    while self._player_stop_calls_in_progress:
+                        self._player_stop_condition.wait()
                     if self._active_turn_id == chunk.turn_id:
                         self._active_turn_id = None
                         clear_stop_request = getattr(
@@ -331,8 +345,10 @@ class IncrementalTTSPlayer:
                             "clear_stop_request",
                             None,
                         )
-                        if callable(clear_stop_request):
-                            clear_stop_request()
+                    else:
+                        clear_stop_request = None
+                if callable(clear_stop_request):
+                    clear_stop_request()
             if not self._is_cancelled(chunk.turn_id) and self.on_playback_finished is not None:
                 self.on_playback_finished(result)
         except Exception as exc:

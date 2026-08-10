@@ -233,6 +233,50 @@ def test_cancel_turn_stops_active_cancellable_playback(tmp_path) -> None:
     assert finished == []
 
 
+def test_cancel_turn_calls_reentrant_stop_without_holding_worker_lock(tmp_path) -> None:
+    class ReentrantPlayer:
+        def __init__(self):
+            self.worker = None
+            self.started = threading.Event()
+            self.released = threading.Event()
+            self.worker_lock_was_available = False
+
+        def __call__(self, path):
+            self.started.set()
+            assert self.released.wait(timeout=2)
+
+        def stop(self):
+            probe_finished = threading.Event()
+
+            def probe_worker():
+                assert self.worker is not None
+                self.worker.is_alive
+                probe_finished.set()
+
+            probe = threading.Thread(target=probe_worker)
+            probe.start()
+            self.worker_lock_was_available = probe_finished.wait(timeout=0.2)
+            self.released.set()
+            probe.join(timeout=1)
+
+    player = ReentrantPlayer()
+    worker = IncrementalTTSPlayer(
+        FakeSynthesizer(),
+        temp_parent=tmp_path,
+        player=player,
+    )
+    player.worker = worker
+    worker.start()
+    assert worker.submit(TextChunk("playing", turn_id="turn-1", sequence_id=0))
+    assert player.started.wait(timeout=2)
+
+    worker.cancel_turn("turn-1")
+    worker.join()
+    worker.close()
+
+    assert player.worker_lock_was_available is True
+
+
 def test_cancellation_during_player_setup_does_not_start_stale_audio(
     tmp_path,
     monkeypatch,
