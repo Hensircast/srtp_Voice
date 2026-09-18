@@ -152,6 +152,22 @@ def test_streaming_vad_finish_keeps_last_frames_without_trailing_silence() -> No
     assert update.completed_pcm16 == first + last
 
 
+def test_partial_readiness_tracks_pause_resume_without_losing_audio() -> None:
+    collector = StreamingUtteranceCollector(
+        sample_rate=1000, frame_ms=10, threshold=0.01,
+        min_speech_ms=10, silence_ms=20, pre_roll_ms=0, calibration_ms=0,
+    )
+    assert not collector.partial_ready
+    frames = [_frame(1000), _frame(0), _frame(1200), _frame(0), _frame(0)]
+    ready = []
+    for index, pcm in enumerate(frames):
+        update = collector.feed(_audio(pcm, index))
+        ready.append(collector.partial_ready)
+    assert ready == [True, False, True, False, False]
+    assert update.vad_stopped
+    assert update.completed_pcm16 == b"".join(frames)
+
+
 def test_incremental_asr_emits_changed_partials_and_exactly_one_final() -> None:
     replies = iter(["你", "你", "你好", "你好啊"])
     transcribed_sizes = []

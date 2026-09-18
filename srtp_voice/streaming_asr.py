@@ -288,6 +288,15 @@ class StreamingUtteranceCollector:
         )
 
     @property
+    def partial_ready(self) -> bool:
+        """Only decode new partials while speaking, not during endpoint silence.
+
+        This is an O(1) scheduling hint, not an audio filter: final ASR still
+        receives every recorded frame, including pauses and trailing silence.
+        """
+        return self._started and not self._completed and self._silence_frames == 0
+
+    @property
     def pcm16(self) -> bytes:
         return b"".join(self._recorded)
 
