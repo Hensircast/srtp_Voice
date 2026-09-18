@@ -579,8 +579,8 @@ def capture_streaming_microphone(
                         )
                 now = monotonic()
                 if (
-                    collector.pcm16
-                    and partial_future is None
+                    partial_future is None
+                    and collector.partial_ready
                     and now - last_partial_submit
                     >= cfg.stream_asr_partial_interval_seconds
                 ):

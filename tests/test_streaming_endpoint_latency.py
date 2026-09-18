@@ -12,16 +12,25 @@ from srtp_voice.streaming_runtime import TurnHandle, capture_streaming_microphon
 
 
 @pytest.mark.parametrize("vad_stop", [True, False])
-def test_endpoint_does_not_schedule_partial(monkeypatch, tmp_path, vad_stop):
+@pytest.mark.parametrize("silence_frames", [0, 4])
+def test_endpoint_does_not_schedule_partial(monkeypatch, tmp_path, vad_stop, silence_frames):
     import srtp_voice.streaming_runtime as module
 
     calls = []
     pcm = b"\x10\x00" * 160
 
     class Collector:
-        pcm16 = pcm
+        partial_ready = False
+        frames = 0
+
+        @property
+        def pcm16(self):
+            raise AssertionError("silence must not copy a full ASR snapshot")
 
         def feed(self, frame):
+            self.frames += 1
+            if self.frames <= silence_frames:
+                return VADStreamUpdate()
             return VADStreamUpdate(
                 vad_stopped=vad_stop,
                 completed_pcm16=pcm if vad_stop else None,
@@ -41,7 +50,8 @@ def test_endpoint_does_not_schedule_partial(monkeypatch, tmp_path, vad_stop):
             pass
 
         def chunks(self):
-            yield AudioChunk(pcm, 16000)
+            for _ in range(silence_frames + 1):
+                yield AudioChunk(pcm, 16000)
 
     class Executor:
         def __init__(self, **kwargs):
@@ -65,7 +75,7 @@ def test_endpoint_does_not_schedule_partial(monkeypatch, tmp_path, vad_stop):
     monkeypatch.setattr(module, "PCM16ASRTranscriber", lambda *a, **kw: lambda data: "final text")
     events = []
     runtime = SimpleNamespace(emit=lambda handle, event, payload=None: events.append(event))
-    cfg = AppConfig(output_dir=tmp_path, max_record_seconds=0.032, frame_ms=32)
+    cfg = AppConfig(output_dir=tmp_path, max_record_seconds=0.032 * (silence_frames + 1), frame_ms=32)
     text = capture_streaming_microphone(
         cfg, object(), runtime, TurnHandle("test", threading.Event()), tmp_path / "input.wav"
     )
