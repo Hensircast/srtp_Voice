@@ -221,6 +221,13 @@ def test_latency_tracker_uses_a_bounded_rolling_sample_window() -> None:
         tracker.finish_turn(turn_id)
 
     assert tracker.completed_turns == 3
+    history = tracker.history()
+    assert [item["turn_id"] for item in history] == ["turn-2", "turn-3"]
+    assert all(set(item) == {"turn_id", "marks", "latencies_ms"} for item in history)
+    history[0]["marks"].clear()
+    history[0]["latencies_ms"].clear()
+    assert tracker.history()[0]["marks"]["turn_started"] == 1.0
+    assert tracker.history()[0]["latencies_ms"]["turn_total_ms"] == 2.0
     assert tracker.summary()["turn_total_ms"] == {
         "count": 2,
         "min": 2.0,

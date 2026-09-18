@@ -322,6 +322,7 @@ def run_one_streaming_turn(
             {
                 "last_turn": result.latency.to_dict(),
                 "summary": runtime.controller.latency_summary(),
+                "turns": runtime.controller.latency_history(),
                 "late_events": runtime.controller.late_events,
                 "dropped_event_history": runtime.controller.dropped_history_events,
                 "tts_backpressure_events": result.backpressure_events,
@@ -362,6 +363,7 @@ def run_one_streaming_turn(
         snapshot = runtime.controller.last_turn_snapshot
         diagnostics = {
             "summary": runtime.controller.latency_summary(),
+            "turns": runtime.controller.latency_history(),
             "late_events": runtime.controller.late_events,
             "dropped_event_history": runtime.controller.dropped_history_events,
             "tts_backpressure_events": runtime.tts_backpressure_events,
@@ -526,6 +528,7 @@ def main() -> None:
                 streaming_metrics_file,
                 {
                     "summary": streaming_runtime.controller.latency_summary(),
+                    "turns": streaming_runtime.controller.latency_history(),
                     "late_events": streaming_runtime.controller.late_events,
                     "dropped_event_history": (
                         streaming_runtime.controller.dropped_history_events

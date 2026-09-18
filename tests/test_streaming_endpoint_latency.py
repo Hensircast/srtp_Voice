@@ -7,6 +7,7 @@ import pytest
 
 from srtp_voice.config import AppConfig
 from srtp_voice.streaming import AudioChunk, StreamEventType
+from srtp_voice.streaming import TextChunk
 from srtp_voice.streaming_asr import VADStreamUpdate
 from srtp_voice.streaming_runtime import TurnHandle, capture_streaming_microphone
 
@@ -84,3 +85,58 @@ def test_endpoint_does_not_schedule_partial(monkeypatch, tmp_path, vad_stop, sil
     assert events.count(StreamEventType.ASR_FINAL) == 1
     assert StreamEventType.ASR_PARTIAL not in events
     assert events.index(StreamEventType.VAD_STOPPED) < events.index(StreamEventType.ASR_FINAL)
+
+
+@pytest.mark.parametrize("vad_stop", [True, False])
+def test_completed_partial_precedes_endpoint(monkeypatch, tmp_path, vad_stop):
+    import srtp_voice.streaming_runtime as module
+
+    pcm = b"\x10\x00" * 160
+    events = []
+
+    class Collector:
+        partial_ready = True
+        pcm16 = pcm
+        count = 0
+
+        def feed(self, frame):
+            self.count += 1
+            return VADStreamUpdate(
+                vad_stopped=vad_stop and self.count == 2,
+                completed_pcm16=pcm if self.count == 2 else None,
+            )
+
+        def finish(self):
+            return VADStreamUpdate(vad_stopped=True, completed_pcm16=pcm)
+
+    class Microphone:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def chunks(self):
+            yield AudioChunk(pcm, 16000)
+            yield AudioChunk(pcm, 16000)
+
+    class Executor(Microphone):
+        def submit(self, fn, *args):
+            future = Future()
+            future.set_result(TextChunk("partial", sequence_id=0))
+            return future
+
+    monkeypatch.setattr(module.StreamingUtteranceCollector, "from_config", lambda cfg: Collector())
+    monkeypatch.setattr(module, "MicrophoneFrameStream", Microphone)
+    monkeypatch.setattr(module, "ThreadPoolExecutor", Executor)
+    monkeypatch.setattr(module, "PCM16ASRTranscriber", lambda *a, **kw: lambda data: "final")
+    runtime = SimpleNamespace(emit=lambda handle, event, payload=None: events.append(event))
+    cfg = AppConfig(output_dir=tmp_path, max_record_seconds=0.064, frame_ms=32)
+    capture_streaming_microphone(
+        cfg, object(), runtime, TurnHandle("test", threading.Event()), tmp_path / "input.wav"
+    )
+    assert events.count(StreamEventType.ASR_PARTIAL) == 1
+    assert events.index(StreamEventType.ASR_PARTIAL) < events.index(StreamEventType.VAD_STOPPED)

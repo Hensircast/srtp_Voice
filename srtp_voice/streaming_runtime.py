@@ -190,6 +190,9 @@ class StreamingTurnController:
     def latency_summary(self) -> Dict[str, Dict[str, float | int]]:
         return self._tracker.summary()
 
+    def latency_history(self) -> list[Dict[str, Any]]:
+        return self._tracker.history()
+
     @property
     def last_turn_snapshot(self) -> TurnTimingSnapshot | None:
         with self._lock:
@@ -556,6 +559,17 @@ def capture_streaming_microphone(
                 update = collector.feed(frame)
                 if update.vad_started:
                     runtime.emit(handle, StreamEventType.VAD_STARTED)
+                # Harvest already-completed work before publishing the endpoint;
+                # only NEW partial scheduling belongs after terminal checks.
+                if partial_future is not None and partial_future.done():
+                    partial = partial_future.result()
+                    partial_future = None
+                    if partial is not None:
+                        runtime.emit(
+                            handle,
+                            StreamEventType.ASR_PARTIAL,
+                            {"text": partial.text, "asr_sequence": partial.sequence_id},
+                        )
                 # Endpoint handling must precede partial scheduling: a new
                 # snapshot here would delay final ASR by a full extra decode.
                 if update.vad_stopped:
@@ -568,15 +582,6 @@ def capture_streaming_microphone(
                         runtime.emit(handle, StreamEventType.VAD_STOPPED)
                         completed_pcm16 = final_update.completed_pcm16
                     break
-                if partial_future is not None and partial_future.done():
-                    partial = partial_future.result()
-                    partial_future = None
-                    if partial is not None:
-                        runtime.emit(
-                            handle,
-                            StreamEventType.ASR_PARTIAL,
-                            {"text": partial.text, "asr_sequence": partial.sequence_id},
-                        )
                 now = monotonic()
                 if (
                     partial_future is None

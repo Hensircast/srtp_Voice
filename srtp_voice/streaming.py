@@ -316,6 +316,11 @@ class LatencyTracker:
                 }
             return result
 
+    def history(self) -> list[Dict[str, Any]]:
+        """Bounded chronological timing-only history, independent of audio events."""
+        with self._lock:
+            return [snapshot.to_dict() for snapshot in self._completed]
+
 
 _SENTENCE_HARD_PUNCTUATION = frozenset("。！？；….!?;")
 _SENTENCE_SOFT_PUNCTUATION = frozenset("：，、,:")
