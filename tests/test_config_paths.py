@@ -13,6 +13,15 @@ def _disable_dotenv(monkeypatch) -> None:
     monkeypatch.setattr(config_module, "load_dotenv", None)
 
 
+def test_default_ollama_uses_ipv4_loopback(monkeypatch) -> None:
+    _disable_dotenv(monkeypatch)
+    monkeypatch.delenv("LLM_OLLAMA_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_OLLAMA_CHAT_URL", raising=False)
+    for cfg in (AppConfig(), AppConfig.from_env()):
+        assert cfg.llm_ollama_base_url == "http://127.0.0.1:11434"
+        assert cfg.llm_ollama_chat_url == "http://127.0.0.1:11434/api/chat"
+
+
 def _set_path_environment(monkeypatch, paths: dict[str, Path]) -> None:
     for name, path in paths.items():
         monkeypatch.setenv(name, str(path))

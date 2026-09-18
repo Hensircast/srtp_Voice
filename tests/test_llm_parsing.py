@@ -1154,8 +1154,8 @@ def _config_from_url_env(overrides):
 
 def test_llm_url_defaults_without_dotenv() -> None:
     cfg = _config_from_url_env({})
-    assert_true("default ollama base url", cfg.llm_ollama_base_url == "http://localhost:11434")
-    assert_true("default ollama chat url", cfg.llm_ollama_chat_url == "http://localhost:11434/api/chat")
+    assert_true("default ollama base url", cfg.llm_ollama_base_url == "http://127.0.0.1:11434")
+    assert_true("default ollama chat url", cfg.llm_ollama_chat_url == "http://127.0.0.1:11434/api/chat")
     assert_true("default lmstudio base url", cfg.llm_lmstudio_base_url == "http://localhost:1234")
     assert_true(
         "default lmstudio chat url",

@@ -21,7 +21,7 @@ def test_env_example_leaves_chat_urls_unset() -> None:
     ]
     active = [line for line in lines if line and not line.startswith("#")]
 
-    assert "LLM_OLLAMA_BASE_URL=http://localhost:11434" in active
+    assert "LLM_OLLAMA_BASE_URL=http://127.0.0.1:11434" in active
     assert "LLM_LMSTUDIO_BASE_URL=http://localhost:1234" in active
     assert not any(line.startswith("LLM_OLLAMA_CHAT_URL=") for line in active)
     assert not any(line.startswith("LLM_LMSTUDIO_CHAT_URL=") for line in active)
