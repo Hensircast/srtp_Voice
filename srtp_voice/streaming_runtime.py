@@ -556,6 +556,18 @@ def capture_streaming_microphone(
                 update = collector.feed(frame)
                 if update.vad_started:
                     runtime.emit(handle, StreamEventType.VAD_STARTED)
+                # Endpoint handling must precede partial scheduling: a new
+                # snapshot here would delay final ASR by a full extra decode.
+                if update.vad_stopped:
+                    runtime.emit(handle, StreamEventType.VAD_STOPPED)
+                    completed_pcm16 = update.completed_pcm16
+                    break
+                if frame_number >= max_frames:
+                    final_update = collector.finish()
+                    if final_update.vad_stopped:
+                        runtime.emit(handle, StreamEventType.VAD_STOPPED)
+                        completed_pcm16 = final_update.completed_pcm16
+                    break
                 if partial_future is not None and partial_future.done():
                     partial = partial_future.result()
                     partial_future = None
@@ -577,16 +589,6 @@ def capture_streaming_microphone(
                         collector.pcm16,
                     )
                     last_partial_submit = now
-                if update.vad_stopped:
-                    runtime.emit(handle, StreamEventType.VAD_STOPPED)
-                    completed_pcm16 = update.completed_pcm16
-                    break
-                if frame_number >= max_frames:
-                    final_update = collector.finish()
-                    if final_update.vad_stopped:
-                        runtime.emit(handle, StreamEventType.VAD_STOPPED)
-                        completed_pcm16 = final_update.completed_pcm16
-                    break
 
         if partial_future is not None:
             partial = partial_future.result()
