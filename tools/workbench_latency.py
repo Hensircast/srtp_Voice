@@ -444,8 +444,14 @@ def capture_baseline(
             "dropped_event_history": _require_count(
                 payload.get("dropped_event_history", 0), "dropped_event_history"
             ),
-            "cancelled": bool(payload.get("cancelled", False)),
-            "failed": bool(payload.get("failed", False)),
+            "cancelled": (
+                _require_json_bool(payload["cancelled"], "cancelled")
+                if "cancelled" in payload else False
+            ),
+            "failed": (
+                _require_json_bool(payload["failed"], "failed")
+                if "failed" in payload else False
+            ),
         },
         "per_turn": turns_out,
         "per_turn_available": per_turn,
@@ -498,6 +504,14 @@ def _require_bool(value: Any, where: str) -> bool:
     return value
 
 
+def _require_json_bool(value: Any, where: str) -> bool:
+    """Strict JSON boolean: no truthiness coercion, no strings or numbers."""
+
+    if not isinstance(value, bool):
+        raise BaselineError(f"{where} must be a JSON boolean")
+    return value
+
+
 def _validate_comparison_document(document: Any, *, label: str) -> Mapping[str, Any]:
     """Strictly validate an untrusted baseline JSON before any computation."""
 
@@ -517,17 +531,59 @@ def _validate_comparison_document(document: Any, *, label: str) -> Mapping[str, 
     turns = document.get("per_turn")
     if not isinstance(turns, list):
         raise BaselineError(f"{label} per_turn must be an array")
+    groups: list[str] = []
     for index, turn in enumerate(turns):
         _require_mapping(turn, f"{label} per_turn[{index}]")
         if not isinstance(turn.get("turn_id"), str) or not turn["turn_id"]:
             raise BaselineError(f"{label} per_turn[{index}].turn_id must be a string")
-        if not isinstance(turn.get("group"), str):
-            raise BaselineError(f"{label} per_turn[{index}].group must be a string")
+        group = turn.get("group")
+        if group not in {"first_observed", "subsequent"}:
+            raise BaselineError(f"{label} per_turn[{index}].group is missing or unknown")
+        expected = "first_observed" if index == 0 else "subsequent"
+        if group != expected:
+            raise BaselineError(
+                f"{label} per_turn[{index}].group contradicts the recorded order"
+            )
+        groups.append(group)
         latency_map = _require_mapping(turn.get("latencies_ms"), f"{label} per_turn[{index}].latencies_ms")
+        allowed_metrics = known_metric_names()
         for key, value in latency_map.items():
             if not isinstance(key, str):
                 raise BaselineError(f"{label} per_turn[{index}] latency keys must be strings")
+            if key not in allowed_metrics:
+                raise BaselineError(
+                    f"{label} per_turn[{index}] contains an unknown timing field"
+                )
             _require_non_negative(value, f"{label} per_turn[{index}] latency value")
+
+    available = bool(document.get("per_turn_available"))
+    if available and not groups:
+        raise BaselineError(f"{label} claims per-turn evidence but carries no valid record")
+    if available and not any(
+        isinstance(turn.get("latencies_ms"), Mapping) and turn["latencies_ms"] for turn in turns
+    ):
+        raise BaselineError(f"{label} claims per-turn evidence with empty latency records")
+    declared_groups = document.get("per_turn_groups")
+    if declared_groups is not None and groups:
+        declared = _require_mapping(declared_groups, f"{label} per_turn_groups")
+        for name in ("first_observed", "subsequent"):
+            if name in declared:
+                expected_count = groups.count(name)
+                _require_count(declared[name], f"{label} per_turn_groups.{name}")
+                if int(declared[name]) != expected_count:
+                    raise BaselineError(
+                        f"{label} per_turn_groups.{name} contradicts the per-turn records"
+                    )
+    elif declared_groups is not None and available:
+        raise BaselineError(f"{label} per_turn_groups is present without per-turn records")
+
+    counters = document.get("counters")
+    if counters is not None:
+        counters_map = _require_mapping(counters, f"{label} counters")
+        for name in ("cancelled", "failed"):
+            if name in counters_map:
+                _require_json_bool(counters_map[name], f"{label} counters.{name}")
+
     measurement = document.get("measurement")
     if measurement is None:
         measurement = "unknown"

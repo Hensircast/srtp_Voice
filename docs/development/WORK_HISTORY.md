@@ -64,7 +64,15 @@
 - 最后新增缺失背压计数为 null 而非实测零的回归，完整本地 **512 passed/17.60s**，编译与 pip check 成功。本记录保存时，最后修正的提交与 CI 尚待核实；最终结果保存到本地 `outputs/workbench/codex-final-evidence.json`，恢复仍需匹配 PR HEAD 在线复查。
 - 最后提交前第三次 Review 返回四条新 P2：跨派工 ID 的会话互斥、空 per-turn 证据、outcome 严格 boolean、离线 UNC 网络访问。四条尚未修复/解决，不能称复审通过或任务全部完成。最新额度剩约 **7%/52%**，按用户准则启动断点保护，不再新开发/派工、不兑换；保存修复清单及安全停止点。认证控制进程均已退出，dsh 最后 idle/queue=0。
 
-## 按需加载
+## 2026-09-29 晚：Harness 桌面恢复与第三轮审查修复
+
+- 唤醒已安装的 Harness 0.2.0-rc.2，在原“SRTP 工作台试点读取核验”中串行执行两批有限任务；未新建对话，未修改全局模型/权限/配置。界面显示 DeepSeek-V41-Flash / Max；新回环端口的未认证旧客户端收到 401，没有绕过或读取凭证，改用已登录桌面界面。
+- 原提交 a8021a2 的双平台 CI 在线核实 success。Codex 用该提交源代码独立复现四个真实缺陷：模拟接受两次派工、空逐轮可比、字符串 false 转真、8 次被拦截 UNC 探测；未真实联网或重复派工。证据脚本在 outputs/workbench/review3-desktop/。
+- DeepSeek 实现主体。首版助手回归 12 failed/3 passed → 15 passed；Codex 独立验收仍 4 failed/22 passed，发现侧锁名冲突、未知逐轮字段及混合 UNC。具体反馈后修正，完整独立 553 passed/14.62s。再补诊断解析顺序/警告语义，修复前 2 failed，最终 **555 passed/14.92s**，compileall/pytest/pip check 全部 exit 0，比恢复起点增加 43 项回归。
+- 原 report.json 中的 fixed/环境判断不是 Codex 验收；保留它和失败日志，后续独立验收写 codex-evidence.json，不覆盖失败历史。未见遗留项目测试进程；桌面助手已停止本批，应用按用户意图保留开启。
+- 此记录为发布前证据快照：新提交 CI 与线程闭环须匹配在线 HEAD，不能用 a8021a2 的通过代替新代码。无新增语音速度或受控额度节省实测。本轮本地下载/安装/训练/付费/兑换均为 0；可读元数据约 2.69 GiB/63036 文件，1 处读取缺口。
+
+## 按需加载索引
 
 - 当前目标、授权缺口、助手状态及恢复步骤：WORK_CHECKPOINT.md。
 - 长期规则：仓库根目录 AGENTS.md；派工格式：DSH_TASK_TEMPLATE.md。

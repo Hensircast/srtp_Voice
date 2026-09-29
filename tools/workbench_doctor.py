@@ -20,6 +20,7 @@ import argparse
 import importlib.metadata
 import importlib.util
 import json
+import os
 import shutil
 import sys
 import urllib.error
@@ -161,6 +162,30 @@ def dependency_report(
     return report
 
 
+def is_remote_namespace(path: Any) -> bool:
+    """True for UNC and network-namespace paths; never touches the filesystem."""
+
+    if path is None:
+        return False
+    try:
+        raw = os.fspath(path)
+    except TypeError:
+        return False
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", errors="replace")
+    if not isinstance(raw, str):
+        return False
+    text = raw.strip()
+    if not text:
+        return False
+    # Normalize both separators in memory first: Windows accepts "\/server" and
+    # "/\server" as UNC, and POSIX Path("//server/share") silently drops one
+    # leading slash. Block any multi-prefix form conservatively; nothing here
+    # resolves or touches the filesystem.
+    normalized = text.replace("\\", "/")
+    return normalized.startswith("//")
+
+
 def describe_path(
     path: Path | str,
     project_root: Path,
@@ -168,36 +193,45 @@ def describe_path(
     exists: bool | None = None,
     location: str | None = None,
 ) -> dict[str, Any]:
-    """Report existence/size for a path without leaking absolute locations."""
+    """Report existence/size for a path without leaking absolute locations.
 
+    UNC/network paths are classified and returned untouched: no resolve(),
+    exists() or stat() is issued, so an offline or ``--online`` run never
+    reaches an SMB share. Their state is reported as unknown, not missing.
+    """
+
+    if is_remote_namespace(path):
+        return {"location": "<network-path>", "exists": None, "bytes": None, "probed": False}
     root = Path(project_root).resolve()
     candidate = Path(path)
     raw = str(path)
-    # A Windows path is a relative filename on Linux (and vice versa).
-    # Detect foreign syntax before native resolution so it cannot be echoed
-    # as a supposedly safe project-relative location.
-    foreign_absolute = not candidate.is_absolute() and (
-        bool(PureWindowsPath(raw).drive) or PurePosixPath(raw).is_absolute()
+    # A Windows path is a relative filename on Linux (and vice versa); a POSIX
+    # absolute path is drive-relative on Windows. Detect both before native
+    # resolution so nothing foreign is probed and no raw path is echoed.
+    foreign_absolute = raw.startswith(("/", "\\")) or (
+        not candidate.is_absolute() and bool(PureWindowsPath(raw).drive)
     )
     if foreign_absolute:
-        return {"location": "<outside-project>", "exists": bool(exists), "bytes": None}
+        return {"location": "<outside-project>", "exists": exists, "bytes": None, "probed": False}
     candidate = candidate if candidate.is_absolute() else root / candidate
     if location is None:
         root = Path(project_root).resolve()
         try:
             resolved = candidate.resolve()
         except OSError:
-            return {"location": "unresolved", "exists": False, "bytes": None}
+            return {"location": "unresolved", "exists": None, "bytes": None, "probed": False}
         if resolved == root or root in resolved.parents:
             location = resolved.relative_to(root).as_posix()
         else:
             location = "<outside-project>"
     path = candidate
+    probed = exists is not None
     if exists is None:
         try:
             exists = Path(path).exists()
+            probed = True
         except OSError:
-            exists = False
+            exists = None
     size: int | None = None
     if exists:
         try:
@@ -206,7 +240,7 @@ def describe_path(
                 size = candidate.stat().st_size
         except OSError:
             size = None
-    return {"location": location, "exists": bool(exists), "bytes": size}
+    return {"location": location, "exists": None if exists is None else bool(exists), "bytes": size, "probed": probed}
 
 
 def _check_url(url: str) -> tuple[bool, str | None]:
@@ -364,6 +398,21 @@ def summarize_audio(diagnostics: Mapping[str, Any]) -> dict[str, Any]:
     return summary
 
 
+def _local_path_report(cfg: AppConfig, root: Path, entry: Mapping[str, Any]) -> dict[str, Any]:
+    """Safely inspect one local model path; network paths stay unprobed."""
+
+    raw = entry.get("path")
+    if not raw:
+        return {"location": "<not-configured>", "exists": None, "bytes": None, "probed": False}
+    if is_remote_namespace(raw):
+        return {"location": "<network-path>", "exists": None, "bytes": None, "probed": False}
+    if entry.get("probed") is False:
+        # The diagnostics collector did not probe; do a safe local check here.
+        return describe_path(raw, root)
+    exists = entry.get("exists")
+    return describe_path(raw, root, exists=None if exists is None else bool(exists))
+
+
 def _model_reports(
     cfg: AppConfig,
     root: Path,
@@ -379,18 +428,7 @@ def _model_reports(
         if isinstance(paths, Mapping) and isinstance(paths.get("ser_model"), Mapping):
             ser_entry = paths["ser_model"]
     if ser_entry is not None:
-        raw_path = ser_entry.get("path")
-        exists = ser_entry.get("exists")
-        if raw_path:
-            models["ser_model"] = describe_path(
-                raw_path, root, exists=bool(exists)
-            )
-        else:
-            models["ser_model"] = {
-                "location": "<not-configured>",
-                "exists": bool(exists),
-                "bytes": None,
-            }
+        models["ser_model"] = _local_path_report(cfg, root, ser_entry)
     elif cfg.ser_model is not None:
         models["ser_model"] = describe_path(cfg.ser_model, root)
     else:
@@ -398,6 +436,7 @@ def _model_reports(
             "location": "<resolved-by-diagnostics>",
             "exists": None,
             "bytes": None,
+            "probed": False,
         }
     return models
 
@@ -408,7 +447,7 @@ def collect_doctor_report(
     cfg_loaded: bool | None = None,
     project_root: Path | None = None,
     python_version: Sequence[int] | None = None,
-    collect: Callable[[AppConfig], Mapping[str, Any]] = collect_diagnostics,
+    collect: Callable[[AppConfig], Mapping[str, Any]] | None = None,
     fetch: Callable[[str, float], Mapping[str, Any]] | None = None,
     online: bool = False,
 ) -> dict[str, Any]:
@@ -424,7 +463,12 @@ def collect_doctor_report(
     diagnostics: Mapping[str, Any] | None = None
     audio: dict[str, Any]
     try:
-        diagnostics = collect(config)
+        if collect is not None:
+            diagnostics = collect(config)
+        else:
+            # Probe only audio and metadata inside diagnostics; model paths are
+            # classified here first so UNC/network namespaces are never touched.
+            diagnostics = collect_diagnostics(config, probe_paths=False)
         audio = summarize_audio(diagnostics)
     except Exception as exc:  # noqa: BLE001 - read-only probe must not crash doctor
         audio = {"status": WARNING, "available": False, "detail": safe_exception(exc)}
@@ -450,6 +494,8 @@ def collect_doctor_report(
         severity = worse(severity, entry["status"])
     for name, entry in models.items():
         if entry.get("exists") is None:
+            if entry.get("location") == "<network-path>":
+                severity = worse(severity, WARNING)
             continue
         if not entry["exists"]:
             severity = worse(severity, WARNING)

@@ -165,7 +165,31 @@ def test_abnormal_child_exit_cannot_be_resumed(tmp_path, monkeypatch):
 def test_doctor_redacts_absolute_paths_from_both_platforms(tmp_path, raw):
     from tools import workbench_doctor as doctor
     report = doctor.describe_path(raw, tmp_path, exists=True)
-    assert report == {"location": "<outside-project>", "exists": True, "bytes": None}
+    # UNC/network shares are classified and left unprobed; other absolute paths
+    # stay outside-project and keep the caller-supplied existence without any
+    # further probing. Neither form may echo the original location.
+    if raw.startswith("\\\\"):
+        expected = {
+            "location": "<network-path>",
+            "exists": None,
+            "bytes": None,
+            "probed": False,
+        }
+    elif raw.startswith("/"):
+        expected = {
+            "location": "<outside-project>",
+            "exists": True,
+            "bytes": None,
+            "probed": False,
+        }
+    else:
+        expected = {
+            "location": "<outside-project>",
+            "exists": True,
+            "bytes": None,
+            "probed": True,
+        }
+    assert report == expected
     assert "private" not in json.dumps(report)
 
 
@@ -179,7 +203,7 @@ def test_doctor_relative_path_is_based_on_project_not_process_cwd(tmp_path, monk
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)
     report = doctor.describe_path("models/model.bin", root)
-    assert report == {"location": "models/model.bin", "exists": True, "bytes": 5}
+    assert report == {"location": "models/model.bin", "exists": True, "bytes": 5, "probed": True}
 
 
 def test_task_display_does_not_rewrite_label_or_evidence_arguments(tmp_path):

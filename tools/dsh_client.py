@@ -526,10 +526,10 @@ def _process_alive(pid: Any) -> str:
 
 
 @contextlib.contextmanager
-def _dispatch_lock(ledger: Path):
+def _file_lock(lock_path: Path):
     """OS advisory lock, released even on process death; never force-cleared."""
-    lock_path = ledger.with_suffix(".lock")
-    if lock_path.is_symlink() or lock_path.resolve().parent != ledger.parent:
+
+    if lock_path.is_symlink() or lock_path.resolve().parent != lock_path.parent:
         raise DshClientError("dispatch lock escapes the ledger root")
     with open(lock_path, "a+b") as handle:
         handle.seek(0, os.SEEK_END)
@@ -556,6 +556,47 @@ def _dispatch_lock(ledger: Path):
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
+@contextlib.contextmanager
+def _dispatch_lock(ledger: Path):
+    """Per-ledger lock; kept for compatibility with dispatch-id-level callers."""
+
+    with _file_lock(ledger.with_suffix(".lock")):
+        yield
+
+
+def session_lock_name(session_id: str) -> str:
+    """Sidecar lock name for one session; never expressible as a dispatch id."""
+
+    if not isinstance(session_id, str) or not session_id:
+        raise DshClientError("a session id is required for the session lock")
+    digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:32]
+    # The leading dot keeps the stem outside the dispatch-id alphabet, so no
+    # valid dispatch id can ever map onto this lock file.
+    return f".session-{digest}.lock"
+
+
+@contextlib.contextmanager
+def session_dispatch_lock(session_id: str, *, root: Path | None = None):
+    """One canonical project/session-level OS lock around prompt submission."""
+
+    base = (Path(root) if root is not None else PROJECT_ROOT).resolve()
+    lock_root = _ledger_root(base)
+    lock_path = lock_root / session_lock_name(session_id)
+    if lock_path.parent != lock_root:
+        raise DshClientError("session lock escapes the ledger root")
+    with _file_lock(lock_path):
+        yield
+
+
+def _ledger_root(base: Path) -> Path:
+    ledger_root = base / LEDGER_RELATIVE
+    ledger_root.mkdir(parents=True, exist_ok=True)
+    resolved_root = ledger_root.resolve()
+    if resolved_root != base and base not in resolved_root.parents:
+        raise DshClientError("ledger root escapes the project")
+    return resolved_root
+
+
 def dispatch_task(
     session: Any,
     dispatch_id: str,
@@ -570,9 +611,21 @@ def dispatch_task(
     root = (Path(project_root) if project_root is not None else PROJECT_ROOT).resolve()
     ledger = ledger_path(dispatch_id, root=root)
     task_path, digest, text = validate_task_file(task_file, root=root)
+    # Fixed lock order: per-dispatch ledger first, then the shared session lock,
+    # which covers the queue verification, ledger writes and prompt submission.
     with _dispatch_lock(ledger):
-        return _dispatch_locked(session, dispatch_id, task_path, digest, text,
-                                session_id=session_id, root=root, ledger=ledger, retry=retry)
+        with session_dispatch_lock(session_id, root=root):
+            return _dispatch_locked(
+                session,
+                dispatch_id,
+                task_path,
+                digest,
+                text,
+                session_id=session_id,
+                root=root,
+                ledger=ledger,
+                retry=retry,
+            )
 
 
 def _dispatch_locked(session, dispatch_id, task_path, digest, text, *, session_id, root, ledger, retry):

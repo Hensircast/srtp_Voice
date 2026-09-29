@@ -220,6 +220,7 @@ def test_doctor_missing_audio_devices_and_optional_models_are_warnings_only(tmp_
         "location": "tools/piper/piper.exe",
         "exists": False,
         "bytes": None,
+        "probed": True,
     }
     assert report["models"]["ser_model"]["location"] == "<outside-project>"
     assert report["models"]["ser_model"]["exists"] is True
@@ -711,8 +712,13 @@ def test_doctor_relative_ser_model_resolves_against_project_root(tmp_path, monke
     inside = workbench_doctor.describe_path(Path("models/ser/model.onnx"), tmp_path)
     outside = workbench_doctor.describe_path(tmp_path.parent / "elsewhere.onnx", tmp_path)
 
-    assert inside == {"location": "models/ser/model.onnx", "exists": True, "bytes": 4}
-    assert outside == {"location": "<outside-project>", "exists": False, "bytes": None}
+    assert inside == {"location": "models/ser/model.onnx", "exists": True, "bytes": 4, "probed": True}
+    assert outside == {
+        "location": "<outside-project>",
+        "exists": False,
+        "bytes": None,
+        "probed": True,
+    }
 
 
 def test_doctor_uses_resolved_ser_path_from_diagnostics_without_leaking(tmp_path) -> None:
@@ -735,6 +741,7 @@ def test_doctor_uses_resolved_ser_path_from_diagnostics_without_leaking(tmp_path
         "location": "<outside-project>",
         "exists": True,
         "bytes": None,
+        "probed": True,
     }
     assert "secret" not in serialized
     assert "C:\\Users" not in serialized

@@ -147,11 +147,21 @@ python -m tools.dsh_client --console
 - 仅 `session/list`、`session/projections`、`session/prompt`（catalog 只读可读）；不创建会话、不改全局模型/权限。
 - token 只经 `getpass` 隐藏输入，仅存内存；不落盘、不进 argv/环境/日志。base URL 必须 loopback、无 userinfo/query/fragment；禁代理与自动 redirect，token 交换只接受同 origin `/` 或 `./` 的 303。
 - `status` 只输出精选字段（session_id、running、权限、实际模型、usage、队列数）；`tokenUsage` 不是剩余额度或金额。`--console` 可保持连接避免反复认证。
-- `dispatch` 仅接收 docs/ 或 outputs/ 下的 markdown，拒绝链接路径；先落盘 `outputs/workbench/dsh/<ID>.json` ledger 再发 RPC，同 ID 文件/会话变更拒绝。独占派工锁覆盖初次和重试，重复 accepted 不再派发；响应丢失的 ambiguous 必须显式 `--retry` 并复用同一 requestId。
-- running、已有队列或无法识别队列时拒绝新增派工；不用模型轮询状态。accepted 仅表示进入 inbox，验收必须查看实际文件和测试。当前本机只核实 V4 Flash 别名，不宣称 V4.1；不改变全局模型、effort 或权限。
+- `dispatch` 仅接收 docs/ 或 outputs/ 下的 markdown，拒绝链接路径；先落盘 `outputs/workbench/dsh/<ID>.json` ledger 再发 RPC，同 ID 文件/会话变更拒绝。每-ID 锁和同项目/会话 OS 锁覆盖初次、重试、队列核验与 prompt；不同 ID 也不能并发进入同一会话。重复 accepted 不再派发；ambiguous 必须显式 `--retry` 并复用同一 requestId，不强清锁。
+- running、已有队列或无法识别队列时拒绝新增派工；不用模型轮询状态。accepted 仅表示进入 inbox，验收必须查看实际文件和测试。旧 CLI 曾核实 V4 Flash 别名；本轮桌面原会话界面显示 DeepSeek-V41-Flash / Max，此为选中模型标识，不冒充底层服务版本审计；不改变全局模型、effort 或权限。
 - 认证/状态/派工真实联调由 Codex 执行。协议测试采用离线 mock，task 有一个真实但不递归的短子进程测试；均不代替真实语音实验。
 
 ## 低消耗工作循环
+
+### 已安装 Harness 桌面版的恢复
+
+本项目已实际核实桌面版 0.2.0-rc.2：启动后可打开既有 srtp_Voice 工作区及“SRTP 工作台试点读取核验”原对话。先核对末轮任务、项目目录、助手是否闲置，再发一个有限任务文件；验证实际差异、失败日志与有效测试，不以发送成功/完成短报验收。
+
+桌面版的服务端口可随启动变化；本轮旧 HTTP 客户端未认证请求返回 401。不要沿用旧 3080/旧 cookie、读取内部凭证、绕过认证或另启重复服务；当前用已登录的桌面界面继续工作，未宣称旧 CLI 已兼容桌面认证。源码/离线协议测试与真实桌面执行分开记证据。需要 UI 操作时用受支持桌面控制，先观察、操作后刷新，不盲目重复发送。
+
+doctor 永不探测配置中的 UNC/网络命名空间（包括混合分隔符）；网络模型显示未知并警告，`--online` 仍只允许已约定 loopback tags，不允许 SMB 探测。外部基线的空/错误逐轮分组、未知指标及非 boolean outcome 会被拒绝；未知条件不能形成性能比较结论。
+
+### 日常循环
 
 1. 恢复只读 AGENTS.md 与 WORK_CHECKPOINT.md；按 PROJECT_MAP.md 定向找文件，不重读整段历史。
 2. 按 DSH_TASK_TEMPLATE.md 一次合并派发一个可验收批次，明确工具调用数、时长和停止点；详细证据落盘，短报即可。

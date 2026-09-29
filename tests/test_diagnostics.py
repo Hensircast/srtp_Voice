@@ -234,10 +234,12 @@ def test_reports_piper_paths_and_ffmpeg(
     assert data["paths"]["piper_executable"] == {
         "path": str(piper_exe),
         "exists": expected_exists,
+        "probed": True,
     }
     assert data["paths"]["piper_model"] == {
         "path": str(piper_model),
         "exists": expected_exists,
+        "probed": True,
     }
     assert data["ffmpeg"] == {
         "status": ffmpeg_status,

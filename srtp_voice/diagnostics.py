@@ -160,15 +160,25 @@ def _ser_model_path(cfg: AppConfig) -> Path | None:
     return None
 
 
-def _path_diagnostic(path: Path | None) -> dict[str, Any]:
-    return {
-        "path": str(path) if path is not None else None,
-        "exists": path.exists() if path is not None else False,
-    }
+def _path_diagnostic(path: Path | None, *, probe: bool = True) -> dict[str, Any]:
+    if path is None:
+        return {"path": None, "exists": False, "probed": False}
+    if not probe:
+        # Callers that must not touch a network namespace read the resolved
+        # path only; no exists()/stat() is issued here.
+        return {"path": str(path), "exists": None, "probed": False}
+    return {"path": str(path), "exists": path.exists(), "probed": True}
 
 
-def collect_diagnostics(cfg: AppConfig) -> dict[str, Any]:
-    """Collect read-only platform, backend, path, and audio diagnostics."""
+def collect_diagnostics(cfg: AppConfig, *, probe_paths: bool = True) -> dict[str, Any]:
+    """Collect read-only platform, backend, path, and audio diagnostics.
+
+    ``probe_paths=False`` keeps the same shape but reports ``exists=None`` and
+    ``probed=False`` for every model path, so a caller can inspect paths itself
+    (for example to skip UNC/network namespaces). The default keeps the
+    historical behaviour, including the resolved SenseVoice default path.
+    """
+
     ffmpeg = shutil.which("ffmpeg")
     return {
         "system": {
@@ -187,9 +197,9 @@ def collect_diagnostics(cfg: AppConfig) -> dict[str, Any]:
             "tts_backend": cfg.tts_backend,
         },
         "paths": {
-            "ser_model": _path_diagnostic(_ser_model_path(cfg)),
-            "piper_executable": _path_diagnostic(Path(cfg.tts_piper_exe)),
-            "piper_model": _path_diagnostic(Path(cfg.tts_piper_model)),
+            "ser_model": _path_diagnostic(_ser_model_path(cfg), probe=probe_paths),
+            "piper_executable": _path_diagnostic(Path(cfg.tts_piper_exe), probe=probe_paths),
+            "piper_model": _path_diagnostic(Path(cfg.tts_piper_model), probe=probe_paths),
         },
         "ffmpeg": {
             "status": "ok" if ffmpeg else "warning",
