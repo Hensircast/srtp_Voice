@@ -53,9 +53,7 @@ def test_ci_workflow_runs_only_offline_base_test_commands() -> None:
 
     assert commands == [
         "python -m pip install -r requirements.txt",
-        "python -m compileall -q main.py srtp_voice tests",
-        "python -m pytest -q",
-        "python -m pip check",
+        "python -m tools.workbench validate --profile full",
     ]
 
     command_text = "\n".join(commands).lower()
@@ -81,3 +79,26 @@ def test_ci_workflow_runs_only_offline_base_test_commands() -> None:
         "main.py --diagnose",
     )
     assert all(token not in command_text for token in forbidden)
+
+
+def test_ci_workflow_delegates_to_the_shared_validation_entry_point() -> None:
+    from tools import workbench_validate
+
+    commands = _run_commands(_workflow_text())
+
+    assert commands[0] == "python -m pip install -r requirements.txt"
+
+    entry = commands[1]
+    assert entry == "python -m tools.workbench validate --profile full"
+    prefix, _, profile = entry.partition("--profile ")
+    assert prefix.endswith("validate ")
+    assert profile.strip() == "full"
+
+    plan = workbench_validate.build_plan(profile.strip())
+    assert [argv[1:3] for argv in plan] == [
+        ["-m", "compileall"],
+        ["-m", "pytest"],
+        ["-m", "pip"],
+    ]
+    assert plan[-1][2:4] == ["pip", "check"]
+    assert all("install" not in " ".join(argv) for argv in plan)
