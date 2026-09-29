@@ -277,3 +277,11 @@ def test_baseline_counts_ignored_latency_keys_independently_of_id(tmp_path, turn
     assert document["ignored_key_count"] == 1
     assert document["renamed_turn_ids"] == (1 if " " in turn_id else 0)
     assert "unknown-private-field" not in json.dumps(document)
+
+
+def test_missing_backpressure_counter_is_unknown_not_measured_zero(tmp_path):
+    from srtp_voice.config import AppConfig
+    source = tmp_path / "metrics.json"
+    source.write_text('{"summary": {}}', encoding="utf-8")
+    document, _ = latency.capture_baseline(source, measurement="unknown", label="legacy", cfg=AppConfig(), root=tmp_path)
+    assert document["counters"]["tts_backpressure_events"] is None

@@ -18,9 +18,15 @@
 
 - DeepSeek 主执行 core/ops，Codex 审查关键差异并补独立回归。涉及解释器参数绕过、进程终止、并发重试等安全子问题由 Codex 接管；不把助手的完成字样当验收。
 - 工具：`python -m tools.workbench` 的 doctor/validate/snapshot/baseline/task；`python -m tools.dsh_client` 的 status/dispatch/console。用法与 PowerShell 同轮复测入口：WORKBENCH.md；故障到模块/测试：PROJECT_MAP.md。
-- 最新本地完整验证：`validate --profile full`，**511 passed / 34.01s / exit 0**；compileall 与 pip check 均 exit 0。新增复审回归，局部修复前真实 22 failed，修复后全部通过；未知字段与重命名计数分别核对，没有降低断言。
+- 最新本地完整验证：`validate --profile full`，**512 passed / 17.60s / exit 0**；compileall 与 pip check 均 exit 0。新增复审回归，局部修复前真实 22 failed，修复后全部通过；未知字段与重命名计数分别核对，没有降低断言。最后一项回归保证旧文件缺失背压计数时输出 null（未知），不冒充实测零。
 - 首次提交 `55e3b40` 的 [CI](https://github.com/Hensircast/srtp_Voice/actions/runs/36543096587) Windows 成功、Ubuntu 1 failed/478 passed。修复提交 `058c5d156dca48198737a587b3ab47425852060e` 的 [双平台 CI](https://github.com/Hensircast/srtp_Voice/actions/runs/36544108954) 均成功：Windows 488 passed/7.68s，Ubuntu 488 passed/2.87s，编译和 pip check 均成功。不要混淆两个 SHA 或用旧失败运行冒充通过；后续文档提交的最新 CI 恢复时在线核对。
-- 第一轮两条 Review 已在 `058c5d1` 修复并在验证后回复/解决。复审 `058c5d1` 又返回四条：基础清单不应把未显式声明的 NumPy 当直接依赖、严格校验 summary、保存 TTS 背压、正确数未知 latency 字段。四条已独立复现并在本地修复；已核实 NumPy 是 soundfile 传递依赖，移除直接基础要求，不新增安装。修复仍需推送/双平台 CI 后回复四线程，不能称复审全通过。
+- 第一轮两条 Review 已在 `058c5d1` 修复并在验证后回复/解决。复审 `058c5d1` 又返回四条：基础清单不应把未显式声明的 NumPy 当直接依赖、严格校验 summary、保存 TTS 背压、正确数未知 latency 字段。修复提交 `66f2b4dc0a97454fd1beccc1207b8ff4d01f1573` 的 [双平台 CI](https://github.com/Hensircast/srtp_Voice/actions/runs/36545870096) 成功：Windows 511 passed/9.37s，Ubuntu 511 passed/3.24s，编译与 pip check 成功；六条线程均已带证据回复/解决。已核实 NumPy 是 soundfile 传递依赖，移除直接基础要求，不新增安装。
+- 提交前复查发现 `66f2b4d` 的第三次 Review 已返回四条新的 P2，**尚未修复，不能称任务全部完成**：
+  1. `PRRT_kwDOSvoFtc6nCIJ3`：dsh 不同派工 ID 的锁不互斥；同一会话并发可能都通过空队列检查。需项目/会话级锁覆盖 status 到 prompt，并做不同 ID 并发回归。
+  2. `PRRT_kwDOSvoFtc6nCIKB`：比较证据可标记 per_turn_available=true 但 per_turn 为空；需严格校验实际非空且分组有效，拒绝虚假可比结论。
+  3. `PRRT_kwDOSvoFtc6nCIKH`：cancelled/failed 直接 bool() 会把字符串 false 转成 true；需拒绝非 JSON boolean 并补类型回归。
+  4. `PRRT_kwDOSvoFtc6nCIKO`：doctor 在脱敏前 collect_diagnostics 可能对 UNC 路径调用 exists，导致离线 SMB/认证访问；需在探测前阻断网络路径并测试零网络/路径探测。
+- 缺失背压 null 修正完成本地 512 项验证；其最终保存提交/最新 CI 需以 PR HEAD 和 `outputs/workbench/codex-final-evidence.json` 的后续核实记录为准。512 项通过不表示覆盖上述四条新问题；未经独立复现、修复、测试与 CI 不解决线程。
 - 已验证拒绝拼接 `-c` 等解释器参数、未知/敏感参数、路径越界、覆盖旧任务、并发派工、错误 schema；中断只操作本次 Popen，不按旧 PID 杀进程。无法证明孙进程结束时 unknown，禁止自动 resume；遗留任务锁不自动清除。
 - 真实 CLI 短任务 `handoff-a0527dc67b19`：exit 0、completed，后续只读 probe wrapper/child 均 dead；证据 `outputs/workbench/tasks/handoff-a0527dc67b19/`。它仅执行 manual 入口，不算语音设备测试。
 - 历史真实指标导入 `outputs/workbench/historical-20260918-verified.json`，原文件 SHA-256 已保留。endpoint p50/max 3398/8906 ms；无 turns、recording_context=null，不编造可比配置或性能提升。快照是当前配置，不是测量本身，必须配对同一轮数据。
@@ -39,14 +45,15 @@
 
 - Python 3.12.10；实际只读 doctor 全部 ok，基础/可选依赖、音频输入输出、Piper/SER 文件存在。没有加载模型、录音或播放。此前 online 检查 Ollama 不可访问、未看到服务进程；不证明模型缺失，先确认本机 Ollama 服务，不重装/换模型。
 - 默认用户 pytest 临时目录 PermissionError；使用 outputs/workbench 下新 GUID basetemp/cache 验证，未改 ACL/全局环境。PYTEST_ADDOPTS 用正斜杠及引号，防止 shlex 吃掉反斜杠。一次误解析产生的本轮专用临时目录已移入 outputs/workbench 保留；未删除用户数据。不安全的助手 conftest 已移除且未恢复。
-- 最新可访问元数据统计 60608 文件、2879586382 bytes（约 2.68 GiB）、1 个读取错误，为下界。本轮本地下载/安装/训练/付费/兑换均为 0。
-- 最近 Codex 额度约剩 32%（5 小时）、56%（7 天），仅当时读数；保护规则 10%/7% 见 AGENTS.md，不使用重置券。
+- 最近可访问元数据统计 61439 文件、2881880145 bytes（约 2.68 GiB）、1 个读取错误，为当时下界。本轮本地下载/安装/训练/付费/兑换均为 0。
+- 最新 Codex 额度约剩 **7%（5 小时）、52%（7 天）**，已触发断点保护：停止新开发/派工，仅安全保存本轮状态；不付费、不使用重置券。读数可能延迟，保护规则见 AGENTS.md。
 
 ## 下一步与恢复
 
-1. 提交当前四条复审修复，核验新 SHA 双平台 CI 并带证据回复/解决四线程；已有源代码/文档提交 CI 均核实，但不能代替当前修复。继续按有限批次检查新增审查，不合并 #24/#23。
-2. 恢复前核对 #24 最新 HEAD/Review/CI；断点是上述 SHA 的证据快照，不替代新的在线检查。详情与 PowerShell 复现均在 WORKBENCH.md。
-3. 工具完成后按 WORKBENCH.md 的同轮快照流程收集 6–10 轮，保留 first_observed 与 subsequent，不把第一轮直接当冷启动；语音性能仍待真机证据。
-4. 恢复核对 HEAD/dirty/进程/队列与唯一 ID，再开展下一短批次；未知存活或危险操作先停，不删除锁/强推/扩大任务。
+1. 恢复先核对额度、HEAD/dirty、#24 最新 Review/CI 与本地证据；最终保存提交 CI 若仍 pending 必须核实，不使用旧提交通过冒充。已有六条已处理，不重复回复，不合并 #24/#23。
+2. 按有限批次处理上述四条新 P2：先独立复现并保存失败证据；会话锁/UNC 认证风险由 Codex 判断方案，边界清晰的实现与测试可交回既有 DeepSeek 会话；不用其他 Codex 子代理冒充 DeepSeek。每次派工明确停止点，修复验证后才解决线程。
+3. 修复前禁止并发 dsh dispatch；配置可能含 UNC 时不要运行 doctor；不依据未严格校验的外部比较文件或 outcome 类型作研究结论。现有工具并非最终验收完成。
+4. 工具完成后按 WORKBENCH.md 的同轮快照流程收集 6–10 轮，保留 first_observed 与 subsequent，不把第一轮直接当冷启动；语音性能仍待真机证据。
+5. 恢复核对相关进程/队列与唯一 ID，再开展下一短批次；未知存活或危险操作先停，不删除锁/强推/扩大任务。所有本轮认证进程已退出，恢复需隐藏输入认证，不把凭证写入交接。
 
 模型、.env、虚拟环境、录音/数据和服务进程需分别核实；本断点不替代备份，也不包含认证凭证。

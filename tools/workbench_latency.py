@@ -437,7 +437,10 @@ def capture_baseline(
         "summary": summary,
         "counters": {
             "late_events": _require_count(payload.get("late_events", 0), "late_events"),
-            "tts_backpressure_events": _require_count(payload.get("tts_backpressure_events", 0), "tts_backpressure_events"),
+            "tts_backpressure_events": (
+                _require_count(payload["tts_backpressure_events"], "tts_backpressure_events")
+                if "tts_backpressure_events" in payload else None
+            ),
             "dropped_event_history": _require_count(
                 payload.get("dropped_event_history", 0), "dropped_event_history"
             ),
