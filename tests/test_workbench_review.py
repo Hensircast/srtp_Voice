@@ -220,3 +220,60 @@ def test_comparison_requires_latency_mapping_before_iteration(tmp_path, monkeypa
     assert code == 2
     assert "private-latency-value" not in capsys.readouterr().out
     assert not (outputs / "new.json").exists()
+
+
+def test_doctor_base_dependencies_match_explicit_requirements():
+    import re
+    from tools import workbench_doctor as doctor
+    requirements = (workbench.PROJECT_ROOT / "requirements.txt").read_text(encoding="utf-8")
+    declared = {re.match(r"[A-Za-z0-9._-]+", line.strip()).group(0)
+                for line in requirements.splitlines() if line.strip() and not line.lstrip().startswith("#")}
+    assert {name for name, module in doctor.BASE_DEPENDENCIES} == declared
+
+
+@pytest.mark.parametrize("bad_stats", [
+    {"count": True}, {"count": "1"}, {"count": 1.5}, {"count": -1},
+    {"p50": "1"}, {"p50": True}, {"p50": -1}, {"p50": float("nan")},
+    {"p50": float("inf")}, {"min": 20, "p50": 10}, {"p50": 20, "p95": 10},
+    {"p95": 20, "max": 10}, ["p50"],
+])
+def test_comparison_rejects_invalid_summary_statistics(tmp_path, bad_stats):
+    from srtp_voice.config import AppConfig
+    source = tmp_path / "metrics.json"
+    source.write_text(json.dumps({"summary": {}, "turns": [{
+        "turn_id": "test-turn", "marks": {}, "latencies_ms": {"asr_final_ms": 10},
+    }]}), encoding="utf-8")
+    document, _ = latency.capture_baseline(source, measurement="simulated", label="test", cfg=AppConfig(), root=tmp_path)
+    document["recording_context"] = {
+        "git_head": "a" * 40, "config_fingerprint": document["config_fingerprint"],
+        "python": document["capture_context"]["python"], "os": document["capture_context"]["os"],
+    }
+    document["summary"] = {"asr_final_ms": bad_stats}
+    with pytest.raises(latency.BaselineError):
+        latency.compare_baselines(document, document)
+
+
+@pytest.mark.parametrize("counter", [0, 7, True, "7", -1, 1.5])
+def test_baseline_preserves_and_validates_backpressure_counter(tmp_path, counter):
+    from srtp_voice.config import AppConfig
+    source = tmp_path / "metrics.json"
+    source.write_text(json.dumps({"summary": {}, "tts_backpressure_events": counter}), encoding="utf-8")
+    if isinstance(counter, int) and not isinstance(counter, bool) and counter >= 0:
+        document, _ = latency.capture_baseline(source, measurement="simulated", label="test", cfg=AppConfig(), root=tmp_path)
+        assert document["counters"]["tts_backpressure_events"] == counter
+    else:
+        with pytest.raises(latency.BaselineError):
+            latency.capture_baseline(source, measurement="simulated", label="test", cfg=AppConfig(), root=tmp_path)
+
+
+@pytest.mark.parametrize("turn_id", ["safe-turn", "turn-valid", "private ID requiring rename"])
+def test_baseline_counts_ignored_latency_keys_independently_of_id(tmp_path, turn_id):
+    from srtp_voice.config import AppConfig
+    source = tmp_path / "metrics.json"
+    source.write_text(json.dumps({"summary": {}, "turns": [{
+        "turn_id": turn_id, "marks": {}, "latencies_ms": {"unknown-private-field": 5},
+    }]}), encoding="utf-8")
+    document, _ = latency.capture_baseline(source, measurement="simulated", label="test", cfg=AppConfig(), root=tmp_path)
+    assert document["ignored_key_count"] == 1
+    assert document["renamed_turn_ids"] == (1 if " " in turn_id else 0)
+    assert "unknown-private-field" not in json.dumps(document)

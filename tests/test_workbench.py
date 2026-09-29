@@ -520,7 +520,8 @@ def test_baseline_comparison_requires_comparable_measurement_and_config(tmp_path
     )
     same = copy.deepcopy(base)
     for metric in same["summary"].values():
-        metric["p50"] = metric["p50"] + 100.0
+        for stat in ("min", "p50", "p95", "max"):
+            metric[stat] += 100.0  # valid shifted distribution, not inverted percentiles
 
     context = {
         "git_head": "a" * 40,
@@ -806,7 +807,9 @@ def test_baseline_unknown_keys_marks_and_turn_ids_are_not_copied(tmp_path) -> No
     assert "totally_unknown_ms" not in serialized
     assert "passwd" not in serialized
     assert "/etc/passwd" not in serialized
-    assert document["ignored_key_count"] == 4
+    # Three dropped fields; replacing the unsafe ID is tracked separately.
+    assert document["ignored_key_count"] == 3
+    assert document["renamed_turn_ids"] == 1
     assert document["per_turn"][0]["turn_id"] == "turn-1"
     assert document["per_turn"][1]["turn_id"] == "b98fbce5550a44289a1407789a0c4ea3"
     assert "ignored 1" in " ".join(notes)

@@ -18,9 +18,9 @@
 
 - DeepSeek 主执行 core/ops，Codex 审查关键差异并补独立回归。涉及解释器参数绕过、进程终止、并发重试等安全子问题由 Codex 接管；不把助手的完成字样当验收。
 - 工具：`python -m tools.workbench` 的 doctor/validate/snapshot/baseline/task；`python -m tools.dsh_client` 的 status/dispatch/console。用法与 PowerShell 同轮复测入口：WORKBENCH.md；故障到模块/测试：PROJECT_MAP.md。
-- 最新本地完整验证：`validate --profile full`，**488 passed / 13.72s / exit 0**；compileall 与 pip check 均 exit 0。任务/dsh/独立审查定向测试先前 56 项通过。新增跨平台路径、命令原值保留及错误比较类型回归。
+- 最新本地完整验证：`validate --profile full`，**511 passed / 34.01s / exit 0**；compileall 与 pip check 均 exit 0。新增复审回归，局部修复前真实 22 failed，修复后全部通过；未知字段与重命名计数分别核对，没有降低断言。
 - 首次提交 `55e3b40` 的 [CI](https://github.com/Hensircast/srtp_Voice/actions/runs/36543096587) Windows 成功、Ubuntu 1 failed/478 passed。修复提交 `058c5d156dca48198737a587b3ab47425852060e` 的 [双平台 CI](https://github.com/Hensircast/srtp_Voice/actions/runs/36544108954) 均成功：Windows 488 passed/7.68s，Ubuntu 488 passed/2.87s，编译和 pip check 均成功。不要混淆两个 SHA 或用旧失败运行冒充通过；后续文档提交的最新 CI 恢复时在线核对。
-- Codex Review 的 P1 Windows 路径脱敏、P2 latency map 类型均在 `058c5d1` 修复；P2 修复前精确复现 AttributeError（2 failed/2 passed）。新 CI 验证后已带证据回复并解决两线程；[修复复审](https://github.com/Hensircast/srtp_Voice/pull/24#issuecomment-5886714160) 已请求，当前仅确认 bot 接收，结果需核对，不能称其已通过。
+- 第一轮两条 Review 已在 `058c5d1` 修复并在验证后回复/解决。复审 `058c5d1` 又返回四条：基础清单不应把未显式声明的 NumPy 当直接依赖、严格校验 summary、保存 TTS 背压、正确数未知 latency 字段。四条已独立复现并在本地修复；已核实 NumPy 是 soundfile 传递依赖，移除直接基础要求，不新增安装。修复仍需推送/双平台 CI 后回复四线程，不能称复审全通过。
 - 已验证拒绝拼接 `-c` 等解释器参数、未知/敏感参数、路径越界、覆盖旧任务、并发派工、错误 schema；中断只操作本次 Popen，不按旧 PID 杀进程。无法证明孙进程结束时 unknown，禁止自动 resume；遗留任务锁不自动清除。
 - 真实 CLI 短任务 `handoff-a0527dc67b19`：exit 0、completed，后续只读 probe wrapper/child 均 dead；证据 `outputs/workbench/tasks/handoff-a0527dc67b19/`。它仅执行 manual 入口，不算语音设备测试。
 - 历史真实指标导入 `outputs/workbench/historical-20260918-verified.json`，原文件 SHA-256 已保留。endpoint p50/max 3398/8906 ms；无 turns、recording_context=null，不编造可比配置或性能提升。快照是当前配置，不是测量本身，必须配对同一轮数据。
@@ -44,7 +44,7 @@
 
 ## 下一步与恢复
 
-1. 本轮 P0/P1/P2 工具与第一次审查修复已有真实验收；核对修复复审是否新增问题，以及最新文档提交 CI。若有合理问题，先回归修复再提交；不合并 #24/#23。
+1. 提交当前四条复审修复，核验新 SHA 双平台 CI 并带证据回复/解决四线程；已有源代码/文档提交 CI 均核实，但不能代替当前修复。继续按有限批次检查新增审查，不合并 #24/#23。
 2. 恢复前核对 #24 最新 HEAD/Review/CI；断点是上述 SHA 的证据快照，不替代新的在线检查。详情与 PowerShell 复现均在 WORKBENCH.md。
 3. 工具完成后按 WORKBENCH.md 的同轮快照流程收集 6–10 轮，保留 first_observed 与 subsequent，不把第一轮直接当冷启动；语音性能仍待真机证据。
 4. 恢复核对 HEAD/dirty/进程/队列与唯一 ID，再开展下一短批次；未知存活或危险操作先停，不删除锁/强推/扩大任务。

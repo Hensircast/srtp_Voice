@@ -43,7 +43,6 @@ TESTED_MAX_PYTHON = (3, 13)
 # for example the ``piper`` CLI wheel).
 BASE_DEPENDENCIES: tuple[tuple[str, str | None], ...] = (
     ("pytest", "pytest"),
-    ("numpy", "numpy"),
     ("soundfile", "soundfile"),
     ("sounddevice", "sounddevice"),
     ("python-dotenv", "dotenv"),

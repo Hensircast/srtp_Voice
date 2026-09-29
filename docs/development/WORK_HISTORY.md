@@ -60,6 +60,8 @@
 - 可访问元数据 60608 文件/2879586382 bytes、1 处读取错误；本地下载/安装/训练/付费/兑换均为 0。临时目录受限采用项目唯一目录；误解析的本轮临时目录移回 outputs 保留，未删除用户数据。
 - 新工具提交 `55e3b40`，独立 [Draft PR #24](https://github.com/Hensircast/srtp_Voice/pull/24)。首次 CI Windows 成功、Ubuntu 1 failed/478 passed，未冒充全通过；Codex P1 指出跨系统路径脱敏、P2 指出 latency map 类型。修复 `058c5d1` 本地 **488 passed/13.72s**，[双平台 CI](https://github.com/Hensircast/srtp_Voice/actions/runs/36544108954) Windows **488/7.68s**、Ubuntu **488/2.87s** 均成功。P2 修复前精确复现 2 failed/2 passed 的 AttributeError。两线程在推送/验证后回复并解决，已请求修复复审，未把 bot 的接收反应当通过。
 
+- `058c5d1` 的第二次 Review 返回四条统计/依赖问题。NumPy 实际为 soundfile 传递依赖，基础清单改为显式 requirements；比较 summary 重用严格数值/顺序校验；背压保留并验证；忽略字段与 ID 重命名分别计数。独立修复前 **22 failed**，修复后完整 **511 passed/34.01s**。既有比较夹具改用合法整体分布平移，保留 +100 ms 断言；未知字段三项和重命名一项分别精确断言，不减弱隐私检查。当前仍待新 CI/线程处理。
+
 ## 按需加载
 
 - 当前目标、授权缺口、助手状态及恢复步骤：WORK_CHECKPOINT.md。

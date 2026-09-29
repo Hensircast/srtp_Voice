@@ -208,8 +208,8 @@ def _sanitize_turn(
             )
     return (
         {"turn_id": turn_id, "marks": marks, "latencies_ms": latencies},
-        ignored_marks + (ignored_latencies if renamed else 0) + (1 if renamed else 0),
         ignored_marks + ignored_latencies,
+        int(renamed),
     )
 
 
@@ -410,11 +410,10 @@ def capture_baseline(
         notes.append("per_turn_unavailable: source 'turns' array is empty")
     else:
         for index, turn in enumerate(raw_turns):
-            cleaned, ignored_count, _ = _sanitize_turn(
+            cleaned, ignored_count, renamed = _sanitize_turn(
                 turn, index, metric_names, mark_names
             )
-            if cleaned["turn_id"].startswith("turn-"):
-                renamed_ids += 1
+            renamed_ids += renamed
             ignored_turn_keys += ignored_count
             cleaned["group"] = "first_observed" if index == 0 else "subsequent"
             turns_out.append(cleaned)
@@ -438,6 +437,7 @@ def capture_baseline(
         "summary": summary,
         "counters": {
             "late_events": _require_count(payload.get("late_events", 0), "late_events"),
+            "tts_backpressure_events": _require_count(payload.get("tts_backpressure_events", 0), "tts_backpressure_events"),
             "dropped_event_history": _require_count(
                 payload.get("dropped_event_history", 0), "dropped_event_history"
             ),
@@ -505,7 +505,11 @@ def _validate_comparison_document(document: Any, *, label: str) -> Mapping[str, 
         raise BaselineError(f"{label} schema_version must be an integer")
     if version != SCHEMA_VERSION:
         raise BaselineError(f"{label} schema_version is not supported")
-    _require_mapping(document.get("summary"), f"{label} summary")
+    # Apply the same numeric/type/order rules as raw metric ingestion before
+    # any float conversion can fabricate plausible deltas.
+    _, unknown_metrics = _sanitize_summary(document.get("summary"), known_metric_names())
+    if unknown_metrics:
+        raise BaselineError(f"{label} summary contains unknown timing fields")
     _require_bool(document.get("per_turn_available"), f"{label} per_turn_available")
     turns = document.get("per_turn")
     if not isinstance(turns, list):
