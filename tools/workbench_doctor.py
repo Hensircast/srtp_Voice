@@ -25,7 +25,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from srtp_voice.config import AppConfig
@@ -172,16 +172,28 @@ def describe_path(
     """Report existence/size for a path without leaking absolute locations."""
 
     root = Path(project_root).resolve()
+    candidate = Path(path)
+    raw = str(path)
+    # A Windows path is a relative filename on Linux (and vice versa).
+    # Detect foreign syntax before native resolution so it cannot be echoed
+    # as a supposedly safe project-relative location.
+    foreign_absolute = not candidate.is_absolute() and (
+        bool(PureWindowsPath(raw).drive) or PurePosixPath(raw).is_absolute()
+    )
+    if foreign_absolute:
+        return {"location": "<outside-project>", "exists": bool(exists), "bytes": None}
+    candidate = candidate if candidate.is_absolute() else root / candidate
     if location is None:
         root = Path(project_root).resolve()
         try:
-            resolved = Path(path).resolve()
+            resolved = candidate.resolve()
         except OSError:
             return {"location": "unresolved", "exists": False, "bytes": None}
         if resolved == root or root in resolved.parents:
             location = resolved.relative_to(root).as_posix()
         else:
             location = "<outside-project>"
+    path = candidate
     if exists is None:
         try:
             exists = Path(path).exists()

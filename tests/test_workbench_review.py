@@ -159,3 +159,64 @@ def test_abnormal_child_exit_cannot_be_resumed(tmp_path, monkeypatch):
     monkeypatch.setattr(tasks, "process_status", lambda pid: "dead")
     with pytest.raises(tasks.TaskError):
         tasks.resume_task("cancelled", root=tmp_path)
+
+
+@pytest.mark.parametrize("raw", [r"C:\Users\private\model.bin", r"\\private-server\share\model.bin", "/home/private/model.bin"])
+def test_doctor_redacts_absolute_paths_from_both_platforms(tmp_path, raw):
+    from tools import workbench_doctor as doctor
+    report = doctor.describe_path(raw, tmp_path, exists=True)
+    assert report == {"location": "<outside-project>", "exists": True, "bytes": None}
+    assert "private" not in json.dumps(report)
+
+
+def test_doctor_relative_path_is_based_on_project_not_process_cwd(tmp_path, monkeypatch):
+    from tools import workbench_doctor as doctor
+    root = tmp_path / "project"
+    model = root / "models" / "model.bin"
+    model.parent.mkdir(parents=True)
+    model.write_bytes(b"12345")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    report = doctor.describe_path("models/model.bin", root)
+    assert report == {"location": "models/model.bin", "exists": True, "bytes": 5}
+
+
+def test_task_display_does_not_rewrite_label_or_evidence_arguments(tmp_path):
+    from tools import workbench_tasks as tasks
+    command = ["python", "-m", "tools.workbench", "snapshot", "--output", "outputs/context.json", "--label", "trial-python"]
+    execution, displayed = tasks.prepare_task_command(command, root=tmp_path)
+    assert displayed == command
+    assert execution[1:] == command[1:]
+
+
+@pytest.mark.parametrize("bad_map", [["asr_final_ms"], "private-latency-value", 3, True])
+def test_comparison_requires_latency_mapping_before_iteration(tmp_path, monkeypatch, capsys, bad_map):
+    from srtp_voice.config import AppConfig
+    from tools import workbench_latency as latency
+    source = tmp_path / "metrics.json"
+    source.write_text(json.dumps({"summary": {}, "turns": [{
+        "turn_id": "test-turn", "marks": {}, "latencies_ms": {"asr_final_ms": 3},
+    }]}), encoding="utf-8")
+    document, _ = latency.capture_baseline(source, measurement="simulated", label="test", cfg=AppConfig(), root=tmp_path)
+    document["recording_context"] = {
+        "git_head": "a" * 40, "config_fingerprint": document["config_fingerprint"],
+        "python": document["capture_context"]["python"], "os": document["capture_context"]["os"],
+    }
+    document["per_turn"][0]["latencies_ms"] = bad_map
+    with pytest.raises(latency.BaselineError) as error:
+        latency.compare_baselines(document, document)
+    assert "private-latency-value" not in str(error.value)
+    # Exercise the CLI boundary too; malformed previous data must not escape
+    # as an AttributeError or produce a partly written baseline.
+    outputs = tmp_path / "outputs"
+    outputs.mkdir()
+    previous = outputs / "previous.json"
+    previous.write_text(json.dumps(document), encoding="utf-8")
+    monkeypatch.setattr(workbench, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(latency, "PROJECT_ROOT", tmp_path)
+    code = workbench.main(["baseline", "--metrics", "metrics.json", "--output", "outputs/new.json",
+                           "--compare", "outputs/previous.json"])
+    assert code == 2
+    assert "private-latency-value" not in capsys.readouterr().out
+    assert not (outputs / "new.json").exists()

@@ -130,6 +130,7 @@ def test_doctor_report_is_read_only_and_masks_paths_devices_and_secrets(tmp_path
 
     report = workbench_doctor.collect_doctor_report(
         collect=_fake_diagnostics(),
+        cfg=AppConfig(tts_piper_model=PROJECT_ROOT / "models" / "private-model.onnx"),
         project_root=tmp_path,
         python_version=(3, 11, 9),
     )

@@ -58,7 +58,7 @@
 - 实际 dsh 协议 0.1.7-rc.2，会话使用 V4 Flash 别名/effort max，未核实 V4.1，未改默认设置。smoke 增加 3 steps；累计 token 不等于剩余额度，没有受控成本对照，不声称节省比例。
 - 历史计时导入 p50/max 3398/8906 ms，逐轮/测量配置未知；当前配置与测量 provenance 分开，没有新增语音提速宣称，也未代跑真实设备测试。
 - 可访问元数据 60608 文件/2879586382 bytes、1 处读取错误；本地下载/安装/训练/付费/兑换均为 0。临时目录受限采用项目唯一目录；误解析的本轮临时目录移回 outputs 保留，未删除用户数据。
-- 新工具 PR/双平台 CI/Review 待在线验收后在断点记录，不把旧 #23 的成功搬到新分支。
+- 新工具提交 `55e3b40`，独立 [Draft PR #24](https://github.com/Hensircast/srtp_Voice/pull/24)，已请求 Codex Review。首次 CI Windows 成功、Ubuntu 1 failed/478 passed，未冒充全通过；Codex P1 同时指出跨系统路径脱敏，P2 指出比较的 latency map 类型未检查。均已修复，补独立回归；P2 修复前精确复现 2 failed/2 passed 的 AttributeError，修复后完整 **488 passed/13.72s**。新 CI 与线程处理仍须核实。
 
 ## 按需加载
 

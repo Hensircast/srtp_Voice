@@ -100,11 +100,8 @@ def task_layout(task_id: str, *, root: Path | None = None) -> TaskLayout:
 
 def _normalize_display(argv: Sequence[str], python: str) -> list[str]:
     displayed = [str(token) for token in argv]
-    for index, token in enumerate(displayed):
-        if token == python:
-            displayed[index] = "python"
-        elif token.endswith(("python.exe", "python3", "python")):
-            displayed[index] = "python"
+    if displayed:
+        displayed[0] = "python"
     return displayed
 
 

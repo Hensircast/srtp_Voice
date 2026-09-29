@@ -9,7 +9,7 @@
 
 ## 仓库与授权
 
-- 分支 `codex/v1.8-workbench`，基于延迟分支 `a7294458495d9cbad1a740326209edda598f1b01`；拟建独立 stacked Draft PR，base `codex/v1.8-first-audio-latency`，不混入 #23 的验收。
+- 分支 `codex/v1.8-workbench`，基于延迟分支 `a7294458495d9cbad1a740326209edda598f1b01`；[独立 Draft PR #24](https://github.com/Hensircast/srtp_Voice/pull/24)，base `codex/v1.8-first-audio-latency`，已附到任务，不混入 #23 的验收。
 - [PR #23](https://github.com/Hensircast/srtp_Voice/pull/23) OPEN/Draft，base main，唯一 Review thread resolved/outdated；旧 [CI](https://github.com/Hensircast/srtp_Voice/actions/runs/35354538141) 成功，时间 9 月 18 日，不代表新工具 CI。
 - 已授权：本项目必要读写、代码/文档外发给既有 dsh 工作区、自动回归、显式暂存/功能分支提交推送、Draft PR/CI/Codex Review 闭环。禁止项见 AGENTS.md；不合并 #23 或本轮 PR，不改全局模型/环境/权限，不提交凭证、个人录音/对话或模型权重。
 - 下载/训练/付费/磁盘峰值预算未知；当前没有需要这些预算的动作，首次需要时才集中确认。
@@ -18,7 +18,9 @@
 
 - DeepSeek 主执行 core/ops，Codex 审查关键差异并补独立回归。涉及解释器参数绕过、进程终止、并发重试等安全子问题由 Codex 接管；不把助手的完成字样当验收。
 - 工具：`python -m tools.workbench` 的 doctor/validate/snapshot/baseline/task；`python -m tools.dsh_client` 的 status/dispatch/console。用法与 PowerShell 同轮复测入口：WORKBENCH.md；故障到模块/测试：PROJECT_MAP.md。
-- 最新本地完整验证：`validate --profile full`，**479 passed / 10.70s / exit 0**；compileall 与 pip check 均 exit 0。任务/dsh/独立审查定向测试上一轮 56 项通过。双平台新 CI 尚待创建 PR 后检查。
+- 最新本地完整验证：`validate --profile full`，**488 passed / 13.72s / exit 0**；compileall 与 pip check 均 exit 0。任务/dsh/独立审查定向测试先前 56 项通过。新增跨平台路径、命令原值保留及错误比较类型回归。
+- 首次提交 `55e3b40` 的 [CI](https://github.com/Hensircast/srtp_Voice/actions/runs/36543096587) Windows 成功，Ubuntu 1 failed/478 passed：Windows 路径在 Linux 被误解成相对路径，脱敏失效。已修正并保留断言；当前修复仍待推送后的新双平台 CI，不得称旧运行全通过。
+- Codex Review 对 `55e3b40` 返回 P1 Windows 路径脱敏及 P2 latencies_ms 必须为 mapping；均已定位和修复。P2 精确复现为 list/string 的 AttributeError（修复前 2 failed/2 passed）；回归现在完整通过。修复推送、CI 核实后回复/解决线程，不隐藏审查。
 - 已验证拒绝拼接 `-c` 等解释器参数、未知/敏感参数、路径越界、覆盖旧任务、并发派工、错误 schema；中断只操作本次 Popen，不按旧 PID 杀进程。无法证明孙进程结束时 unknown，禁止自动 resume；遗留任务锁不自动清除。
 - 真实 CLI 短任务 `handoff-a0527dc67b19`：exit 0、completed，后续只读 probe wrapper/child 均 dead；证据 `outputs/workbench/tasks/handoff-a0527dc67b19/`。它仅执行 manual 入口，不算语音设备测试。
 - 历史真实指标导入 `outputs/workbench/historical-20260918-verified.json`，原文件 SHA-256 已保留。endpoint p50/max 3398/8906 ms；无 turns、recording_context=null，不编造可比配置或性能提升。快照是当前配置，不是测量本身，必须配对同一轮数据。
@@ -42,7 +44,7 @@
 
 ## 下一步与恢复
 
-1. 精确暂存本轮文件、提交推送、建独立 Draft PR 并附到任务；请求 Codex Review，核验最新 SHA 的 Windows/Ubuntu CI。有合理审查问题先修复/回归再提交。
+1. 精确暂存已验收的 Review/CI 修复、提交推送到 #24，核验新 SHA 的 Windows/Ubuntu CI。继续检查审查新增问题，相关回归通过并推送后才回复/解决线程。
 2. 交付前把 PR/CI/Review 的实际链接及状态更新到本断点与历史；不得将 pending 标成完成。
 3. 工具完成后按 WORKBENCH.md 的同轮快照流程收集 6–10 轮，保留 first_observed 与 subsequent，不把第一轮直接当冷启动；语音性能仍待真机证据。
 4. 恢复核对 HEAD/dirty/进程/队列与唯一 ID，再开展下一短批次；未知存活或危险操作先停，不删除锁/强推/扩大任务。

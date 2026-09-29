@@ -516,9 +516,11 @@ def _validate_comparison_document(document: Any, *, label: str) -> Mapping[str, 
             raise BaselineError(f"{label} per_turn[{index}].turn_id must be a string")
         if not isinstance(turn.get("group"), str):
             raise BaselineError(f"{label} per_turn[{index}].group must be a string")
-        for key in turn.get("latencies_ms") or {}:
+        latency_map = _require_mapping(turn.get("latencies_ms"), f"{label} per_turn[{index}].latencies_ms")
+        for key, value in latency_map.items():
             if not isinstance(key, str):
                 raise BaselineError(f"{label} per_turn[{index}] latency keys must be strings")
+            _require_non_negative(value, f"{label} per_turn[{index}] latency value")
     measurement = document.get("measurement")
     if measurement is None:
         measurement = "unknown"
