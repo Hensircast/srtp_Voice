@@ -186,6 +186,14 @@ def is_remote_namespace(path: Any) -> bool:
     return normalized.startswith("//")
 
 
+def is_foreign_absolute_path(path: Path | str, *, native_path_type=Path) -> bool:
+    """Classify path syntax in memory, without rejecting native absolute paths."""
+    raw = str(path)
+    return not native_path_type(raw).is_absolute() and (
+        bool(PureWindowsPath(raw).drive) or PurePosixPath(raw).is_absolute()
+    )
+
+
 def describe_path(
     path: Path | str,
     project_root: Path,
@@ -208,9 +216,7 @@ def describe_path(
     # A Windows path is a relative filename on Linux (and vice versa); a POSIX
     # absolute path is drive-relative on Windows. Detect both before native
     # resolution so nothing foreign is probed and no raw path is echoed.
-    foreign_absolute = raw.startswith(("/", "\\")) or (
-        not candidate.is_absolute() and bool(PureWindowsPath(raw).drive)
-    )
+    foreign_absolute = is_foreign_absolute_path(raw)
     if foreign_absolute:
         return {"location": "<outside-project>", "exists": exists, "bytes": None, "probed": False}
     candidate = candidate if candidate.is_absolute() else root / candidate

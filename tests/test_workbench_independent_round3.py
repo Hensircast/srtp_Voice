@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 
@@ -205,3 +205,15 @@ def test_unknown_network_model_is_warning_not_healthy(tmp_path, monkeypatch):
     assert report["audio"]["status"] == "ok"
     assert report["models"]["piper_model"]["exists"] is None
     assert report["severity"] == "warning"
+
+
+@pytest.mark.parametrize("native_type,raw,foreign", [
+    (PurePosixPath, "/tmp/project/model", False),
+    (PurePosixPath, r"C:\project\model", True),
+    (PureWindowsPath, r"C:\project\model", False),
+    (PureWindowsPath, "/tmp/project/model", True),
+    (PurePosixPath, "models/model", False),
+    (PureWindowsPath, "models/model", False),
+])
+def test_native_and_foreign_path_syntax_on_both_platforms(native_type, raw, foreign):
+    assert doctor.is_foreign_absolute_path(raw, native_path_type=native_type) is foreign

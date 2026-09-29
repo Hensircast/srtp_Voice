@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -166,19 +167,12 @@ def test_doctor_redacts_absolute_paths_from_both_platforms(tmp_path, raw):
     from tools import workbench_doctor as doctor
     report = doctor.describe_path(raw, tmp_path, exists=True)
     # UNC/network shares are classified and left unprobed; other absolute paths
-    # stay outside-project and keep the caller-supplied existence without any
-    # further probing. Neither form may echo the original location.
+    # stay outside-project and keep the caller-supplied existence. Native paths
+    # may be probed; foreign syntax must not be. Neither may echo its location.
     if raw.startswith("\\\\"):
         expected = {
             "location": "<network-path>",
             "exists": None,
-            "bytes": None,
-            "probed": False,
-        }
-    elif raw.startswith("/"):
-        expected = {
-            "location": "<outside-project>",
-            "exists": True,
             "bytes": None,
             "probed": False,
         }
@@ -187,7 +181,7 @@ def test_doctor_redacts_absolute_paths_from_both_platforms(tmp_path, raw):
             "location": "<outside-project>",
             "exists": True,
             "bytes": None,
-            "probed": True,
+            "probed": Path(raw).is_absolute(),
         }
     assert report == expected
     assert "private" not in json.dumps(report)

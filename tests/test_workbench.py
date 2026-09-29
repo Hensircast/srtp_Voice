@@ -741,7 +741,7 @@ def test_doctor_uses_resolved_ser_path_from_diagnostics_without_leaking(tmp_path
         "location": "<outside-project>",
         "exists": True,
         "bytes": None,
-        "probed": True,
+        "probed": Path(r"C:\Users\somebody\secret\ser.bin").is_absolute(),
     }
     assert "secret" not in serialized
     assert "C:\\Users" not in serialized

@@ -71,6 +71,7 @@
 - DeepSeek 实现主体。首版助手回归 12 failed/3 passed → 15 passed；Codex 独立验收仍 4 failed/22 passed，发现侧锁名冲突、未知逐轮字段及混合 UNC。具体反馈后修正，完整独立 553 passed/14.62s。再补诊断解析顺序/警告语义，修复前 2 failed，最终 **555 passed/14.92s**，compileall/pytest/pip check 全部 exit 0，比恢复起点增加 43 项回归。
 - 原 report.json 中的 fixed/环境判断不是 Codex 验收；保留它和失败日志，后续独立验收写 codex-evidence.json，不覆盖失败历史。未见遗留项目测试进程；桌面助手已停止本批，应用按用户意图保留开启。
 - 此记录为发布前证据快照：新提交 CI 与线程闭环须匹配在线 HEAD，不能用 a8021a2 的通过代替新代码。无新增语音速度或受控额度节省实测。本轮本地下载/安装/训练/付费/兑换均为 0；可读元数据约 2.69 GiB/63036 文件，1 处读取缺口。
+- 发布 `61581e5` 后实际 [CI](https://github.com/Hensircast/srtp_Voice/actions/runs/36566751094) Windows success、Ubuntu 5 failed/550 passed。第四次 Review P1 与该失败根因相同：把所有 `/` 开头的 POSIX 原生绝对路径误当外来路径。Codex 修复纯语法分类、增加 6 项跨平台回归并纠正两项新增 probed 期待值（原隐私断言保留），本地完整 **561 passed/15.63s**，编译与依赖一致性通过。发布新补充提交并核实其 CI 后才回复/解决五线程；新复审结论须另查。
 
 ## 按需加载索引
 
