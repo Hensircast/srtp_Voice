@@ -29,6 +29,7 @@ sounddevice / PortAudio / 默认输入输出设备）、Piper 与 SER 模型文�
   绝不调用 pull/generate，也不加载模型。非 loopback 或带凭证的 endpoint 直接拒绝（warning）。
 - 危险等级：缺基础依赖或 Python 版本不受支持为 `error`；缺可选依赖、模型文件或音频设备为
   `warning`，不视为致命。
+- 基础依赖同时检查 requirements.txt 的版本约束，使用已有轻量 packaging 解析，不导入重运行时。旧但合法版本保留用于诊断；未知/无效版本、缺解析器或无法读取/解析声明不能报健康。重复声明取交集。可选项未声明最低版本时仅报告模块/元数据存在性，不声称运行过模型；文本等级与 JSON status 一致。
 
 退出码：`0` = ok，`1` = warning，`2` = error。
 
@@ -72,6 +73,8 @@ python -m tools.workbench baseline --metrics <源 metrics> --output outputs/work
   才报告 p50/p95 差值；否则标记 `comparable: false` 与原因（`incomparable`），
   不凭历史版本宣称性能提升。
 - 拒绝 NaN/Infinity/负数时延与非法结构（退出码 `2`）。
+- 可比还须有实际共同指标：summary 有共同 p50/p95，或同一 first_observed/subsequent 组有共同时延。只有同名 count 不构成证据；summary 可比不代表逐组可比。部分交集仅计算共享指标，无交集明确不可比。
+- 配置门禁只看测量时的 recording_context，不由导入时的顶层/capture_context 配置否决真实同配置测量。源位置逐组件脱敏，即使 POSIX 字面文件名含 Windows 绝对/UNC 语法也不导出私人路径；安全普通项目相对路径与来源 hash 仍保留。
 
 ### 同轮配置快照与复测
 

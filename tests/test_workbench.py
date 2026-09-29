@@ -546,10 +546,12 @@ def test_baseline_comparison_requires_comparable_measurement_and_config(tmp_path
     assert workbench_latency.compare_baselines(other_measurement, base)["comparable"] is False
 
     other_config = copy.deepcopy(same)
-    other_config["config_fingerprint"] = "deadbeef"
+    # Provenance is judged from the real recording context, not the imported
+    # capture fingerprint, so exercise a changed recording config here.
+    other_config["recording_context"]["config_fingerprint"] = "deadbeef"
     result = workbench_latency.compare_baselines(other_config, base)
     assert result["comparable"] is False
-    assert "key config differs" in result["reasons"]
+    assert "recording config_fingerprint differs" in result["reasons"]
 
     no_turns = copy.deepcopy(same)
     no_turns["per_turn_available"] = False

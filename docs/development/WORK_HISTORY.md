@@ -72,6 +72,17 @@
 - 原 report.json 中的 fixed/环境判断不是 Codex 验收；保留它和失败日志，后续独立验收写 codex-evidence.json，不覆盖失败历史。未见遗留项目测试进程；桌面助手已停止本批，应用按用户意图保留开启。
 - 此记录为发布前证据快照：新提交 CI 与线程闭环须匹配在线 HEAD，不能用 a8021a2 的通过代替新代码。无新增语音速度或受控额度节省实测。本轮本地下载/安装/训练/付费/兑换均为 0；可读元数据约 2.69 GiB/63036 文件，1 处读取缺口。
 - 发布 `61581e5` 后实际 [CI](https://github.com/Hensircast/srtp_Voice/actions/runs/36566751094) Windows success、Ubuntu 5 failed/550 passed。第四次 Review P1 与该失败根因相同：把所有 `/` 开头的 POSIX 原生绝对路径误当外来路径。Codex 修复纯语法分类、增加 6 项跨平台回归并纠正两项新增 probed 期待值（原隐私断言保留），本地完整 **561 passed/15.63s**，编译与依赖一致性通过。发布新补充提交并核实其 CI 后才回复/解决五线程；新复审结论须另查。
+- 后续发布 `f15e2d08daf1b8e742a30759579ccae7027fd9a8`，[精确 SHA CI 36567732865](https://github.com/Hensircast/srtp_Voice/actions/runs/36567732865) 实际 Windows **561 passed/8.52s**、Ubuntu **561 passed/6.19s**，编译和 pip check 均成功；较恢复起点共增 49 项回归。确认后五个 P2/P1 线程逐条带证据回复/解决，未隐藏或 dismiss 审查。一次回复参数格式错误没有产生写入，修正后核对全部五个成功结果。已请求最新复审，保存时没有结论；不合并 #24/#23。原 Harness 对话保持 12 轮/176 步、闲置，没有为了状态同步再启动新任务。
+
+## 2026-09-29 晚：第五轮复审与最终工作台验收
+
+第五轮复审在 f15e2d0 又返回无共同指标/基础版本约束两条 P2。Codex 独立修复前 **8 failed/7 passed**，交回原 Harness 对话有限执行；首版完整 577 通过后，增补实际边界 **5 failed/23 passed**，具体反馈由 DeepSeek 修正。助手 refine-full.log 实际 **589 passed/16.81s**，refine-report.json 误写 577，原报告保留并在 Codex 证据中校正，不盲信短报。最后两类元数据/声明未知防护，修复前 **5 failed/28 passed**，由 Codex 小幅修正并去掉重复读取；最终独立统一 full **594 passed/16.01s**、编译/pip check 和真实离线 doctor 全部成功。源码两模块与独立件已显式提交推送于 `58c39d5bad2936efed6edd5693cb2524c11ace91`；本记录保存时 [CI 36571425999](https://github.com/Hensircast/srtp_Voice/actions/runs/36571425999) in_progress，两线程待该 CI 成功后处理，已请求复审，不合并。原对话现 14 轮/205 步、闲置且无项目测试进程。本轮占用下界 63773 文件/2887389757 bytes/1 处读取缺口，无下载/安装/训练/付费/兑换，也无新增语音/省费实测。
+
+后续在线确认 `58c39d5` 的 CI Windows **594 passed/7.72s**、Ubuntu **594 passed/4.44s**，编译/pip check 全部成功；两线程随后带证据回复/解决。至此本次七条审查意见均已验证闭环；最新复审仍待结论。恢复断点已精简，前版全文和历史失败保留于 Git/日志，不靠重复粘贴全部上下文恢复。
+
+## 2026-09-29 晚：第六轮测量来源与隐私修复
+
+第六次复审在 58c39d5 又返回测量/导入配置混淆和外来路径位置外泄两条 P2。保存提交在写入前被门禁停止，没有继续盲推。独立件真实 **4 failed/3 passed/0.84s**，原 Harness 有限任务仅改基线模块和一处预先批准的测量配置夹具，不弱化原 False/原因断言。助手日志 related **184/13.36s**、full **601/18.10s**，Codex 独立 full **601/16.80s**、编译/pip check 全部通过。Windows 以 POSIX-relative 边界注入，Ubuntu CI 创建真实字面 C:/UNC 文件名，没有 skip。原对话 **15 轮/218 步**已停止；此为发布前快照，新增提交 CI/两线程状态须在线与本地 review6 独立证据核对，不能冒称全部完成。
 
 ## 按需加载索引
 

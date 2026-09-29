@@ -26,7 +26,7 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable, Mapping, Sequence
 
 from srtp_voice.config import AppConfig
@@ -267,6 +267,36 @@ def _fingerprint(config_view: Mapping[str, Any]) -> str:
     ).hexdigest()
 
 
+def _safe_relative_location(resolved: Path, base: Path) -> str | None:
+    """Project-relative location, or None when any component is unsafe.
+
+    Pure syntax only: a POSIX-legal filename may literally contain Windows
+    separators, a drive letter or a UNC prefix, and each component is checked
+    so no username or share name can be exported from either platform.
+    """
+
+    try:
+        relative = resolved.relative_to(base)
+    except (ValueError, OSError):
+        return None
+    parts = relative.parts
+    if not parts:
+        return None
+    for part in parts:
+        text = str(part)
+        if not text:
+            return None
+        if text in {".", ".."}:
+            return None
+        if "\\" in text or ":" in text:
+            return None
+        if PureWindowsPath(text).drive or PureWindowsPath(text).root:
+            return None
+        if PurePosixPath(text).is_absolute():
+            return None
+    return PurePosixPath(*parts).as_posix()
+
+
 def _sha256_of_file(path: Path) -> str | None:
     try:
         return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -381,8 +411,8 @@ def capture_baseline(
     try:
         resolved = source.resolve()
         if is_within_project(resolved, root=base):
-            relative = resolved.relative_to(base).as_posix()
-            escaped = False
+            relative = _safe_relative_location(resolved, base)
+            escaped = relative is None
     except OSError:
         escaped = True
     source_info["location"] = relative if relative is not None else "<outside-project>"
@@ -623,8 +653,9 @@ def compare_baselines(
         reasons.append("measurement differs")
     if current.get("measurement") == "unknown":
         reasons.append("measurement is unknown")
-    if current.get("config_fingerprint") != previous.get("config_fingerprint"):
-        reasons.append("key config differs")
+    # Provenance comes from the real recording context only: an imported or
+    # capture-time config fingerprint must never veto a comparable recording.
+    # The recording config_fingerprint check below covers that case.
     if not current.get("per_turn_available") or not previous.get("per_turn_available"):
         reasons.append("per-turn evidence unavailable")
 
