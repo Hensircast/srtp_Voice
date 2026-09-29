@@ -19,8 +19,8 @@
 - DeepSeek 主执行 core/ops，Codex 审查关键差异并补独立回归。涉及解释器参数绕过、进程终止、并发重试等安全子问题由 Codex 接管；不把助手的完成字样当验收。
 - 工具：`python -m tools.workbench` 的 doctor/validate/snapshot/baseline/task；`python -m tools.dsh_client` 的 status/dispatch/console。用法与 PowerShell 同轮复测入口：WORKBENCH.md；故障到模块/测试：PROJECT_MAP.md。
 - 最新本地完整验证：`validate --profile full`，**488 passed / 13.72s / exit 0**；compileall 与 pip check 均 exit 0。任务/dsh/独立审查定向测试先前 56 项通过。新增跨平台路径、命令原值保留及错误比较类型回归。
-- 首次提交 `55e3b40` 的 [CI](https://github.com/Hensircast/srtp_Voice/actions/runs/36543096587) Windows 成功，Ubuntu 1 failed/478 passed：Windows 路径在 Linux 被误解成相对路径，脱敏失效。已修正并保留断言；当前修复仍待推送后的新双平台 CI，不得称旧运行全通过。
-- Codex Review 对 `55e3b40` 返回 P1 Windows 路径脱敏及 P2 latencies_ms 必须为 mapping；均已定位和修复。P2 精确复现为 list/string 的 AttributeError（修复前 2 failed/2 passed）；回归现在完整通过。修复推送、CI 核实后回复/解决线程，不隐藏审查。
+- 首次提交 `55e3b40` 的 [CI](https://github.com/Hensircast/srtp_Voice/actions/runs/36543096587) Windows 成功、Ubuntu 1 failed/478 passed。修复提交 `058c5d156dca48198737a587b3ab47425852060e` 的 [双平台 CI](https://github.com/Hensircast/srtp_Voice/actions/runs/36544108954) 均成功：Windows 488 passed/7.68s，Ubuntu 488 passed/2.87s，编译和 pip check 均成功。不要混淆两个 SHA 或用旧失败运行冒充通过；后续文档提交的最新 CI 恢复时在线核对。
+- Codex Review 的 P1 Windows 路径脱敏、P2 latency map 类型均在 `058c5d1` 修复；P2 修复前精确复现 AttributeError（2 failed/2 passed）。新 CI 验证后已带证据回复并解决两线程；[修复复审](https://github.com/Hensircast/srtp_Voice/pull/24#issuecomment-5886714160) 已请求，当前仅确认 bot 接收，结果需核对，不能称其已通过。
 - 已验证拒绝拼接 `-c` 等解释器参数、未知/敏感参数、路径越界、覆盖旧任务、并发派工、错误 schema；中断只操作本次 Popen，不按旧 PID 杀进程。无法证明孙进程结束时 unknown，禁止自动 resume；遗留任务锁不自动清除。
 - 真实 CLI 短任务 `handoff-a0527dc67b19`：exit 0、completed，后续只读 probe wrapper/child 均 dead；证据 `outputs/workbench/tasks/handoff-a0527dc67b19/`。它仅执行 manual 入口，不算语音设备测试。
 - 历史真实指标导入 `outputs/workbench/historical-20260918-verified.json`，原文件 SHA-256 已保留。endpoint p50/max 3398/8906 ms；无 turns、recording_context=null，不编造可比配置或性能提升。快照是当前配置，不是测量本身，必须配对同一轮数据。
@@ -40,12 +40,12 @@
 - Python 3.12.10；实际只读 doctor 全部 ok，基础/可选依赖、音频输入输出、Piper/SER 文件存在。没有加载模型、录音或播放。此前 online 检查 Ollama 不可访问、未看到服务进程；不证明模型缺失，先确认本机 Ollama 服务，不重装/换模型。
 - 默认用户 pytest 临时目录 PermissionError；使用 outputs/workbench 下新 GUID basetemp/cache 验证，未改 ACL/全局环境。PYTEST_ADDOPTS 用正斜杠及引号，防止 shlex 吃掉反斜杠。一次误解析产生的本轮专用临时目录已移入 outputs/workbench 保留；未删除用户数据。不安全的助手 conftest 已移除且未恢复。
 - 最新可访问元数据统计 60608 文件、2879586382 bytes（约 2.68 GiB）、1 个读取错误，为下界。本轮本地下载/安装/训练/付费/兑换均为 0。
-- 最新 Codex 额度约剩 47%（5 小时）、59%（7 天），仅当时读数；保护规则 10%/7% 见 AGENTS.md，不使用重置券。
+- 最近 Codex 额度约剩 32%（5 小时）、56%（7 天），仅当时读数；保护规则 10%/7% 见 AGENTS.md，不使用重置券。
 
 ## 下一步与恢复
 
-1. 精确暂存已验收的 Review/CI 修复、提交推送到 #24，核验新 SHA 的 Windows/Ubuntu CI。继续检查审查新增问题，相关回归通过并推送后才回复/解决线程。
-2. 交付前把 PR/CI/Review 的实际链接及状态更新到本断点与历史；不得将 pending 标成完成。
+1. 本轮 P0/P1/P2 工具与第一次审查修复已有真实验收；核对修复复审是否新增问题，以及最新文档提交 CI。若有合理问题，先回归修复再提交；不合并 #24/#23。
+2. 恢复前核对 #24 最新 HEAD/Review/CI；断点是上述 SHA 的证据快照，不替代新的在线检查。详情与 PowerShell 复现均在 WORKBENCH.md。
 3. 工具完成后按 WORKBENCH.md 的同轮快照流程收集 6–10 轮，保留 first_observed 与 subsequent，不把第一轮直接当冷启动；语音性能仍待真机证据。
 4. 恢复核对 HEAD/dirty/进程/队列与唯一 ID，再开展下一短批次；未知存活或危险操作先停，不删除锁/强推/扩大任务。
 
