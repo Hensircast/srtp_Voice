@@ -1,5 +1,7 @@
 # SRTP 表情机器人语音交互项目（V1.8）
 
+开发与恢复入口：[工作台与协作工具](docs/development/WORKBENCH.md)、[当前断点](docs/development/WORK_CHECKPOINT.md)、[项目协作规则](AGENTS.md)。工具建设与语音性能实测分开验收，离线测试不等同于真实设备部署通过。
+
 ## 1. 项目定位
 
 本项目是回合式机器人头部语音交互程序。它在单个 Python 进程中组织音频采集、语音理解、韵律情绪融合、回复生成、语音合成和动作文件输出。默认仍运行 V1.6 同步兼容路径；显式传入 `--streaming` 时启用 V1.8 的流式麦克风帧、partial/final ASR、Ollama token 流、按句 TTS、取消与时延指标。
