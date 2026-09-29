@@ -29,10 +29,21 @@ import urllib.request
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+try:  # packaging ships with pytest; a missing parser must not break import
+    from packaging.requirements import Requirement
+    from packaging.utils import canonicalize_name
+    from packaging.version import Version
+except Exception:  # noqa: BLE001 - reported as a safe category later
+    Requirement = None  # type: ignore[assignment]
+    canonicalize_name = None  # type: ignore[assignment]
+    Version = None  # type: ignore[assignment]
+
+_PARSER_MISSING = Requirement is None or canonicalize_name is None or Version is None
+
 from srtp_voice.config import AppConfig
 from srtp_voice.diagnostics import collect_diagnostics
 
-from .workbench import resolve_project_path, sanitize_text
+from .workbench import PROJECT_ROOT, resolve_project_path, sanitize_text
 
 SEVERITY_ORDER = {"ok": 0, "warning": 1, "error": 2}
 
@@ -128,14 +139,86 @@ def _distribution_version(distribution: str) -> str | None:
         return None
 
 
+def _declared_constraints(root: Path | None = None) -> dict[str, Any] | None:
+    """Read constraints once; None means declarations cannot be verified."""
+
+    if _PARSER_MISSING:
+        return None
+    base = (Path(root) if root is not None else PROJECT_ROOT).resolve()
+    constraints: dict[str, Any] = {}
+    try:
+        lines = (base / "requirements.txt").read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        # Unreadable or undecodable declarations stay unverifiable; the raw
+        # error text is never surfaced.
+        return None
+    for line in lines:
+        text = line.strip()
+        if not text or text.startswith("#"):
+            continue
+        try:
+            requirement = Requirement(text)
+        except Exception:  # noqa: BLE001 - never silently weaken constraints
+            return None
+        key = canonicalize_name(requirement.name)
+        existing = constraints.get(key)
+        # Duplicate declaration lines must intersect, never overwrite.
+        constraints[key] = (
+            existing & requirement.specifier if existing is not None else requirement.specifier
+        )
+    return constraints
+
+
+def _declared_constraint(distribution: str, declared: Mapping[str, Any]) -> Any:
+    try:
+        key = canonicalize_name(distribution)
+    except Exception:  # noqa: BLE001
+        return None
+    return declared.get(key)
+
+
+def _check_declared_version(
+    distribution: str,
+    version: Any,
+    declared: Mapping[str, Any] | None,
+    *,
+    base: bool,
+) -> dict[str, Any]:
+    """PEP 440 check of one installed version against the declared constraint."""
+
+    if _PARSER_MISSING:
+        # No declared-version verification is possible without a parser.
+        return {
+            "status": ERROR if base else WARNING,
+            "detail": "declared_version_parser_unavailable",
+        }
+    if declared is None or not isinstance(version, str):
+        return {"status": ERROR if base else WARNING, "detail": "declared_version_unverifiable"}
+    try:
+        installed = Version(version)
+    except Exception:  # noqa: BLE001 - invalid metadata must not echo the value
+        return {"status": ERROR if base else WARNING, "detail": "version_metadata_invalid"}
+    specifier = _declared_constraint(distribution, declared)
+    if specifier is None:
+        if base:
+            return {"status": ERROR, "detail": "declared_version_unverifiable"}
+        # Known declarations without this optional runtime impose no minimum.
+        # Its module and safe metadata are presence evidence, not a model test.
+        return {"status": OK, "detail": None}
+    if not specifier.contains(installed, prereleases=True):
+        return {"status": ERROR if base else WARNING, "detail": "declared_version_unsatisfied"}
+    return {"status": OK, "detail": None}
+
+
 def dependency_report(
     entries: Iterable[tuple[str, str | None]],
     *,
     base: bool,
     spec_finder: Callable[[str], object | None] = importlib.util.find_spec,
 ) -> list[dict[str, Any]]:
-    """Probe dependencies without importing them."""
+    """Probe dependencies without importing them and enforce requirements.txt."""
 
+    declared = _declared_constraints()
     report: list[dict[str, Any]] = []
     for distribution, module in entries:
         present = True
@@ -146,19 +229,35 @@ def dependency_report(
             except Exception as exc:  # noqa: BLE001 - never echo the message
                 present = False
                 detail = safe_exception(exc)
-        version = _distribution_version(distribution) if present else None
-        report.append(
-            {
-                "name": distribution,
-                "module": module,
-                "present": bool(present),
-                "version": version,
-                "status": OK if present else (ERROR if base else WARNING),
-                "detail": detail if present is False and detail else (
-                    None if present else "not_installed"
-                ),
-            }
-        )
+        version: Any = None
+        if present:
+            raw_version = _distribution_version(distribution)
+            if isinstance(raw_version, str) and Version is not None:
+                try:
+                    # Only a successfully parsed version is safe diagnostic
+                    # evidence; an old-but-valid version is kept as-is.
+                    version = str(Version(raw_version))
+                except Exception:  # noqa: BLE001 - invalid metadata is dropped
+                    version = None
+        status = OK if present else (ERROR if base else WARNING)
+        if present:
+            check = _check_declared_version(
+                distribution, raw_version, declared, base=base
+            )
+            if check["status"] != OK:
+                status = check["status"]
+                detail = check["detail"]
+        elif detail is None:
+            detail = "not_installed"
+        entry = {
+            "name": distribution,
+            "module": module,
+            "present": bool(present),
+            "version": version,
+            "status": status,
+            "detail": detail,
+        }
+        report.append(entry)
     return report
 
 
@@ -536,9 +635,12 @@ def collect_doctor_report(
 
 
 def _format_dependency(entry: Mapping[str, Any]) -> str:
-    if entry.get("present"):
+    # The rendered label follows entry.status, never presence alone: a present
+    # module with an unverifiable or unsatisfied declared version is not OK.
+    status = str(entry.get("status", WARNING))
+    if entry.get("present") and status == OK:
         return f"[OK] {entry['name']}: version={entry.get('version') or 'unknown'}"
-    return f"[{str(entry.get('status', WARNING)).upper()}] {entry['name']}: {entry.get('detail')}"
+    return f"[{status.upper()}] {entry['name']}: {entry.get('detail')}"
 
 
 def render_report(report: Mapping[str, Any]) -> str:

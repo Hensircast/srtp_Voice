@@ -657,12 +657,18 @@ def compare_baselines(
                 entry[stat] = round(float(now[stat]) - float(before[stat]), 3)
         if entry:
             metrics[name] = entry
+    # Comparability must rest on real shared deltas, not on a non-empty key
+    # intersection: a shared metric with no common p50/p95 is no evidence.
+    summary_comparable = bool(metrics)
 
     per_turn: dict[str, Any] = {"comparable": True, "groups": {}}
+    group_overlap = False
+    group_reasons: list[str] = []
     for group in ("first_observed", "subsequent"):
         current_group = [t for t in current.get("per_turn", []) if t.get("group") == group]
         previous_group = [t for t in previous.get("per_turn", []) if t.get("group") == group]
         if not current_group or not previous_group:
+            group_reasons.append("no shared per-turn records in group " + group)
             continue
         now_values: dict[str, list[float]] = {}
         before_values: dict[str, list[float]] = {}
@@ -672,8 +678,13 @@ def compare_baselines(
         for turn in previous_group:
             for key, value in (turn.get("latencies_ms") or {}).items():
                 before_values.setdefault(key, []).append(float(value))
+        shared_metrics = sorted(set(now_values) & set(before_values))
+        if not shared_metrics:
+            group_reasons.append("no shared timing metric in group " + group)
+            continue
+        group_overlap = True
         latencies: dict[str, dict[str, float]] = {}
-        for key in sorted(set(now_values) & set(before_values)):
+        for key in shared_metrics:
             now_sample = now_values[key]
             before_sample = before_values[key]
             latencies[key] = {
@@ -686,7 +697,23 @@ def compare_baselines(
             "turns_previous": len(previous_group),
             "latency_ms": latencies,
         }
-    return {"comparable": True, "reasons": [], "metrics": metrics, "per_turn": per_turn}
+
+    if not group_overlap:
+        per_turn["comparable"] = False
+        per_turn["reasons"] = group_reasons or ["no shared per-turn evidence"]
+
+    comparable = summary_comparable or group_overlap
+    incomparable_reasons: list[str] = []
+    if not summary_comparable:
+        incomparable_reasons.append("no shared timing metric in summary")
+    if not group_overlap:
+        incomparable_reasons.append("no shared timing metric in per-turn groups")
+    return {
+        "comparable": comparable,
+        "reasons": [] if comparable else incomparable_reasons,
+        "metrics": metrics,
+        "per_turn": per_turn,
+    }
 
 
 # --------------------------------------------------------------------------- #
