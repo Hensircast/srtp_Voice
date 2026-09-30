@@ -74,11 +74,16 @@ CONFIG_KEYS: tuple[str, ...] = (
     "stream_natural_boundaries",
     "stream_tts_warmup",
     "stream_asr_in_memory",
+    "stream_llm_reuse_connections",
     "stream_tts_queue_size",
     "stream_sentence_min_chars",
     "stream_sentence_max_chars",
     "stream_sentence_max_wait_seconds",
 )
+
+# Export a transport-neutral name; keep the existing strict URL redaction
+# contract while still including this tuning option in provenance/fingerprints.
+CONFIG_ATTRIBUTES = {"stream_llm_reuse_connections": "stream_llm_reuse_http"}
 
 _SAFE_TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _SAFE_MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,95}(?::[A-Za-z0-9][A-Za-z0-9._-]{0,63})?$")
@@ -266,7 +271,10 @@ def _safe_config_value(value: Any) -> Any:
 
 
 def _config_view(cfg: AppConfig) -> dict[str, Any]:
-    return {key: _safe_config_value(getattr(cfg, key, None)) for key in CONFIG_KEYS}
+    return {
+        key: _safe_config_value(getattr(cfg, CONFIG_ATTRIBUTES.get(key, key), None))
+        for key in CONFIG_KEYS
+    }
 
 
 def _fingerprint(config_view: Mapping[str, Any]) -> str:

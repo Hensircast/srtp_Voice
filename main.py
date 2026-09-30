@@ -432,6 +432,24 @@ def _maybe_warmup_streaming(cfg: AppConfig, runtime: object) -> None:
         print(f"      [WARMUP] streaming piper warmup={'ok' if warmed else 'skipped'}")
 
 
+def _maybe_enable_llm_http_reuse(
+    cfg: AppConfig,
+    generator: object,
+    *,
+    streaming: bool,
+) -> bool:
+    """Enable pooled streaming HTTP only for opt-in streaming Ollama runs."""
+
+    if not streaming or not getattr(cfg, "stream_llm_reuse_http", False):
+        return False
+    if getattr(cfg, "llm_backend", "").lower() != "ollama":
+        return False
+    enable = getattr(generator, "enable_http_reuse", None)
+    if not callable(enable):
+        return False
+    return bool(enable())
+
+
 def main() -> None:
     args = parse_args()
     if bool(getattr(args, "diagnose", False)):
@@ -465,6 +483,7 @@ def main() -> None:
     fsm.set(DialogueStage.IDLE)
 
     streaming_runtime: StreamingResponseRuntime | None = None
+    generator: StrategyGenerator | None = None
     try:
         ser = SpeechEmotionRecognizer(cfg)
         if cfg.ser_backend.strip().lower() == "sensevoice":
@@ -478,6 +497,7 @@ def main() -> None:
         needs_asr = not args.text and args.mode in {"mic", "vad", "file"}
         asr = ASRAdapter(cfg) if needs_asr else None
         generator = StrategyGenerator(cfg)
+        _maybe_enable_llm_http_reuse(cfg, generator, streaming=streaming)
         tts = TTSAdapter(cfg)
         smoother = EmotionStateSmoother(
             cfg.state_file,
@@ -577,8 +597,16 @@ def main() -> None:
         save_fsm_state(fsm, state_file)
         print("\n已收到 Ctrl+C，状态机已回到 Idle，程序正常退出")
     finally:
-        if streaming_runtime is not None:
-            streaming_runtime.close(drain=False)
+        try:
+            if streaming_runtime is not None:
+                streaming_runtime.close(drain=False)
+        finally:
+            # main owns this generator; the runtime only borrows it. Its own
+            # failure must never stop the pooled session from being released.
+            if generator is not None:
+                close_generator = getattr(generator, "close", None)
+                if callable(close_generator):
+                    close_generator()
 
 
 if __name__ == "__main__":

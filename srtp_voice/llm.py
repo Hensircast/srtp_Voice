@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import codecs
 import json
+import threading
 from time import monotonic
 from typing import Any, Callable, Dict, Iterable, Iterator, List
 
@@ -204,11 +205,105 @@ def _is_echo_only_reply(user_text: str, reply_text: str) -> bool:
     return bool(normalized_user) and normalized_user == normalized_reply
 
 
+class _HTTPPoolClosedError(RuntimeError):
+    """Raised when a stream is requested after the pooled session was closed."""
+
+
+class _PooledHTTPClient:
+    """Thin view over one private requests.Session for streaming calls only.
+
+    ``Session`` exposes no ``Timeout``/``HTTPError``/``RequestException``
+    attributes, so the error types always come from the original module. The
+    session stays process-local; no global or proxy configuration is touched.
+    """
+
+    def __init__(self, session: Any, module: Any) -> None:
+        self._session = session
+        self.Timeout = module.Timeout
+        self.HTTPError = module.HTTPError
+        self.RequestException = module.RequestException
+
+    def get(self, url, **kwargs):
+        return self._session.get(url, **kwargs)
+
+    def post(self, url, **kwargs):
+        return self._session.post(url, **kwargs)
+
+
 class StrategyGenerator:
     """Generate reply text and structured robot action strategy."""
 
     def __init__(self, cfg: AppConfig):
         self.cfg = cfg
+        # The session is opt-in and created lazily: a plain
+        # ``StrategyGenerator(cfg)`` never opens a connection.
+        self._http_lock = threading.RLock()
+        self._http_reuse_enabled = False
+        self._http_client: _PooledHTTPClient | None = None
+        self._http_busy = False
+        self._http_closed = False
+
+    def enable_http_reuse(self) -> bool:
+        """Allow one lazily created pooled session for streaming requests."""
+
+        with self._http_lock:
+            if self._http_closed:
+                return False
+            self._http_reuse_enabled = True
+            return True
+
+    def _acquire_http_client(self) -> tuple[Any, bool]:
+        """Lease the owned client, or use independent requests while busy."""
+        with self._http_lock:
+            if self._http_closed:
+                raise _HTTPPoolClosedError(
+                    "LLM HTTP reuse is closed; create a new StrategyGenerator "
+                    "or keep the existing one open for the whole session."
+                )
+            module = _require_requests()
+            if not self._http_reuse_enabled or self._http_busy:
+                # No reuse, or another stream holds the session: independent
+                # module requests keep concurrent turns from sharing one
+                # non-thread-safe session.
+                return module, False
+            if self._http_client is None:
+                session = module.Session()
+                try:
+                    client = _PooledHTTPClient(session, module)
+                except BaseException:
+                    # A wrapping failure must not leak the session we just made.
+                    _close_quietly(session)
+                    raise
+                self._http_client = client
+            self._http_busy = True
+            return self._http_client, True
+
+    def _release_http_client(self, leased: bool) -> None:
+        if not leased:
+            return
+        resource: _PooledHTTPClient | None = None
+        with self._http_lock:
+            self._http_busy = False
+            if self._http_closed:
+                resource = self._http_client
+                self._http_client = None
+        if resource is not None:
+            # Closed while a stream was reading: close outside the lock, once.
+            _close_quietly(resource._session)
+
+    def close(self) -> None:
+        """Idempotent: close the pooled session, or defer it while in use."""
+
+        resource: _PooledHTTPClient | None = None
+        with self._http_lock:
+            if self._http_closed:
+                return
+            self._http_closed = True
+            if not self._http_busy:
+                resource = self._http_client
+                self._http_client = None
+        if resource is not None:
+            _close_quietly(resource._session)
 
     def generate(self, user_text: str, emotion: EmotionResult, history: List[Dict[str, Any]]) -> StrategyResult:
         backend = self.cfg.llm_backend.lower()
@@ -260,6 +355,9 @@ class StrategyGenerator:
         generated text has to be delayed merely to identify the last token.
         """
 
+        with self._http_lock:
+            if self._http_closed:
+                raise _HTTPPoolClosedError("StrategyGenerator streaming HTTP is closed")
         backend = self.cfg.llm_backend.lower()
         if backend != "ollama":
             result = self.generate(user_text, emotion, history)
@@ -297,33 +395,49 @@ class StrategyGenerator:
                 _close_quietly(part_iterator)
 
         try:
-            req = _require_requests()
-            if self._uses_standard_ollama_chat_url():
-                self._check_ollama()
             messages = self._build_streaming_messages(user_text, emotion, history)
+            req, leased = self._acquire_http_client()
             try:
-                parts = self._validated_stream_reply(
-                    user_text,
-                    self._request_ollama_text_stream(req, messages),
-                )
-                yield from emit(parts)
-            except _EchoOnlyStreamError:
-                # The possible echo prefix is held back, so a repair cannot
-                # duplicate already emitted text. Repair is collected because
-                # correctness matters more than latency on this exceptional path.
+                if self._uses_standard_ollama_chat_url():
+                    # The catalogue precheck runs while this stream owns the
+                    # lease, so it uses this request client as well.
+                    if leased:
+                        self._check_ollama(req)
+                    else:
+                        # Preserve the legacy no-argument precheck hook for
+                        # direct callers and their existing test adapters.
+                        self._check_ollama()
                 try:
-                    repair_parts = list(
-                        self._validated_stream_reply(
-                            user_text,
-                            self._request_ollama_text_stream(
-                                req,
-                                self._build_echo_repair_messages(user_text, history),
-                            ),
-                        )
+                    parts = self._validated_stream_reply(
+                        user_text,
+                        self._request_ollama_text_stream(req, messages),
                     )
-                except Exception:
-                    repair_parts = [STREAMING_FALLBACK_REPLY]
-                yield from emit(repair_parts)
+                    yield from emit(parts)
+                except _EchoOnlyStreamError:
+                    # The possible echo prefix is held back, so a repair cannot
+                    # duplicate already emitted text. Repair is collected because
+                    # correctness matters more than latency on this exceptional path.
+                    try:
+                        repair_parts = list(
+                            self._validated_stream_reply(
+                                user_text,
+                                self._request_ollama_text_stream(
+                                    req,
+                                    self._build_echo_repair_messages(user_text, history),
+                                ),
+                            )
+                        )
+                    except Exception:
+                        repair_parts = [STREAMING_FALLBACK_REPLY]
+                    yield from emit(repair_parts)
+            finally:
+                # Normal end, cancellation, echo repair and every exception all
+                # return the lease exactly once.
+                self._release_http_client(leased)
+        except _HTTPPoolClosedError:
+            # Lifecycle shutdown is not a model failure: never rewrite it into
+            # a mock reply.
+            raise
         except Exception:
             if emitted_text or not self.cfg.llm_fallback_to_mock:
                 raise
@@ -717,9 +831,12 @@ class StrategyGenerator:
         derived_chat_url = self.cfg.llm_lmstudio_base_url.rstrip("/") + "/v1/chat/completions"
         return self.cfg.llm_lmstudio_chat_url.rstrip("/") == derived_chat_url.rstrip("/")
 
-    def _check_ollama(self) -> None:
-        req = _require_requests()
+    def _check_ollama(self, req: Any | None = None) -> None:
+        """Check the Ollama catalogue; the streaming path passes its own client."""
+
+        req = req if req is not None else _require_requests()
         tags_url = self.cfg.llm_ollama_base_url.rstrip("/") + "/api/tags"
+        resp = None
         try:
             resp = req.get(tags_url, timeout=5)
             resp.raise_for_status()
@@ -730,6 +847,9 @@ class StrategyGenerator:
             ) from exc
         except ValueError as exc:
             raise RuntimeError("Ollama /api/tags returned invalid JSON.") from exc
+        finally:
+            # The tags response is always released, including on the error paths.
+            _close_quietly(resp)
 
         names = {m.get("name", "") for m in data.get("models", []) if isinstance(m, dict)}
         if self.cfg.llm_model not in names:
