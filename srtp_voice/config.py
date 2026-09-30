@@ -27,6 +27,15 @@ def env_text(name: str, default: str | None = None) -> str | None:
     return stripped if stripped else default
 
 
+def env_warmup_enabled() -> bool:
+    value = os.getenv("STREAM_TTS_WARMUP")
+    if value is not None and value.strip().lower() not in {
+        "1", "true", "yes", "on", "0", "false", "no", "off"
+    }:
+        raise ValueError("STREAM_TTS_WARMUP must be a boolean")
+    return env_bool("STREAM_TTS_WARMUP", False)
+
+
 def env_bounded_float(
     name: str,
     default: float,
@@ -149,6 +158,8 @@ class AppConfig:
     # Prefer real sentence boundaries: commas and enumeration marks no longer
     # reset a sentence, they are only used as bounded fallback breaks.
     stream_natural_boundaries: bool = True
+    # Optional streaming Piper warmup before the first Listening turn.
+    stream_tts_warmup: bool = False
     stream_asr_partial_interval_seconds: float = 0.8
     stream_barge_in_enabled: bool = False
 
@@ -244,6 +255,7 @@ class AppConfig:
                 "STREAM_SENTENCE_MAX_WAIT_SECONDS", 0.8, 0.01, 60.0
             ),
             stream_natural_boundaries=env_bool("STREAM_NATURAL_BOUNDARIES", True),
+            stream_tts_warmup=env_warmup_enabled(),
             stream_asr_partial_interval_seconds=env_bounded_float(
                 "STREAM_ASR_PARTIAL_INTERVAL_SECONDS", 0.8, 0.05, 60.0
             ),

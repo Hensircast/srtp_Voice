@@ -307,13 +307,14 @@ class StreamingResponseRuntime:
         self._owned_streaming_resource = None
 
     def begin_turn(self) -> TurnHandle:
-        if self._closed:
-            raise RuntimeError("StreamingResponseRuntime is closed")
-        handle = self.controller.start_turn()
-        with self._archive_lock:
-            self._audio_by_turn[handle.turn_id] = []
-            self._lip_sync_by_turn[handle.turn_id] = []
-        return handle
+        with self._shutdown_lock:
+            if self._closed:
+                raise RuntimeError("StreamingResponseRuntime is closed")
+            handle = self.controller.start_turn()
+            with self._archive_lock:
+                self._audio_by_turn[handle.turn_id] = []
+                self._lip_sync_by_turn[handle.turn_id] = []
+            return handle
 
     def emit(
         self,
@@ -478,6 +479,26 @@ class StreamingResponseRuntime:
     @property
     def tts_backpressure_events(self) -> int:
         return self._tts_worker.backpressure_events
+
+    def warmup_tts(self) -> bool:
+        """Warm the owned Piper session once, before the first Listening turn.
+
+        Allowed only while the runtime is open and no turn is active; it uses
+        the factory-owned adapter and never the caller's shared adapter. A
+        missing warmup capability reports False instead of raising.
+        """
+
+        with self._shutdown_lock:
+            if self._closed:
+                raise RuntimeError("StreamingResponseRuntime is closed")
+            if self.controller.active_turn_id is not None:
+                raise RuntimeError("Cannot warm up during an active turn")
+            if self.tts is self._caller_tts:
+                return False
+            warmup = getattr(self.tts, "warmup", None)
+            if not callable(warmup):
+                return False
+            return bool(warmup())
 
     def close(self, *, drain: bool = False) -> None:
         """Reject new turns, but retain owned resources until workers stop.

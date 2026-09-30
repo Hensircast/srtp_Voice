@@ -39,9 +39,11 @@ def new_output_directory(value: str) -> Path:
     return output
 
 
-def benchmark(cfg: AppConfig, output: Path, mode: str) -> dict:
+def benchmark(cfg: AppConfig, output: Path, mode: str, *, warmup: bool = False) -> dict:
     if mode not in {"one-shot", "persistent"}:
         raise ValueError("unknown benchmark mode")
+    if warmup and mode != "persistent":
+        raise ValueError("--warmup requires --mode persistent")
     # The benchmark is explicitly real Piper, regardless of the app's mock default.
     from dataclasses import replace
 
@@ -51,7 +53,13 @@ def benchmark(cfg: AppConfig, output: Path, mode: str) -> dict:
     adapter = TTSAdapter(cfg)
     engine = adapter.for_streaming() if mode == "persistent" else adapter
     rows = []
+    warmup_ms = None
+    warmup_success = None
     try:
+        if warmup:
+            warmup_started = time.perf_counter()
+            warmup_success = bool(engine.warmup())
+            warmup_ms = round((time.perf_counter() - warmup_started) * 1000, 3)
         for ordinal, text in enumerate(PUBLIC_TEXTS, start=1):
             path = output / f"public-{ordinal}.wav"
             started = time.perf_counter()
@@ -75,6 +83,10 @@ def benchmark(cfg: AppConfig, output: Path, mode: str) -> dict:
         "playback": False,
         "subjective_listening_verified": False,
         "corpus_sha256": hashlib.sha256("\n".join(PUBLIC_TEXTS).encode("utf-8")).hexdigest(),
+        "warmup_requested": warmup,
+        "warmup_ms": warmup_ms,
+        "warmup_success": warmup_success,
+        "startup_plus_first_synthesis_ms": round((warmup_ms or 0) + rows[0]["synthesis_ms"], 3),
         "model_bytes": model_info.st_size,
         "model_mtime_ns": model_info.st_mtime_ns,
         "python": sys.version.split()[0],
@@ -91,9 +103,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("one-shot", "persistent"), required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument(
+        "--warmup",
+        action="store_true",
+        help="persistent mode only: warm the session before the timed corpus",
+    )
     args = parser.parse_args(argv)
+    if args.warmup and args.mode != "persistent":
+        parser.error("--warmup requires --mode persistent")
     output = new_output_directory(args.output)
-    result = benchmark(AppConfig.from_env(), output, args.mode)
+    result = benchmark(AppConfig.from_env(), output, args.mode, warmup=args.warmup)
     print(json.dumps(result))
     return 0
 

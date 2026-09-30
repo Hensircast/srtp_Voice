@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import Callable
 
 from srtp_voice.audio_io import (
     NoSpeechDetectedError,
@@ -395,6 +396,42 @@ def run_one_streaming_turn(
         raise
 
 
+def _initialize_streaming_runtime(
+    cfg: AppConfig,
+    generator: StrategyGenerator,
+    tts: TTSAdapter,
+    *,
+    playback_enabled: bool,
+    event_sink: Callable[[StreamEvent], None] | None = None,
+) -> StreamingResponseRuntime:
+    """Create the streaming runtime before the first Listening turn."""
+
+    return StreamingResponseRuntime(
+        cfg,
+        generator,
+        tts,
+        event_sink=event_sink,
+        playback_enabled=playback_enabled,
+        temp_parent=cfg.output_dir,
+    )
+
+
+def _maybe_warmup_streaming(cfg: AppConfig, runtime: object) -> None:
+    """Run optional warmup before listening; failure is reported but nonfatal."""
+
+    if runtime is None or not cfg.stream_tts_warmup:
+        return
+    warmup = getattr(runtime, "warmup_tts", None)
+    if not callable(warmup):
+        return
+    try:
+        warmed = warmup()
+    except Exception as exc:  # noqa: BLE001 - warmup is optional
+        print(f"      [WARMUP] 跳过预热：{type(exc).__name__}")
+    else:
+        print(f"      [WARMUP] streaming piper warmup={'ok' if warmed else 'skipped'}")
+
+
 def main() -> None:
     args = parse_args()
     if bool(getattr(args, "diagnose", False)):
@@ -457,13 +494,12 @@ def main() -> None:
                 elif event.event_type == StreamEventType.ASR_PARTIAL:
                     print(f"      [ASR partial] {event.payload.get('text', '')}")
 
-            streaming_runtime = StreamingResponseRuntime(
+            streaming_runtime = _initialize_streaming_runtime(
                 cfg,
                 generator,
                 tts,
                 event_sink=stream_event_sink,
                 playback_enabled=not args.no_play,
-                temp_parent=cfg.output_dir,
             )
             print(
                 "[CONFIG] V1.8 streaming=enabled, "
@@ -473,6 +509,7 @@ def main() -> None:
             )
 
         turn_number = 1
+        _maybe_warmup_streaming(cfg, streaming_runtime if streaming else None)
         while True:
             print(f"[TURN {turn_number}] 开始监听")
             if streaming:

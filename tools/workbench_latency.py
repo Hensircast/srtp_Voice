@@ -72,6 +72,7 @@ CONFIG_KEYS: tuple[str, ...] = (
     "max_record_seconds",
     "tts_piper_persistent",
     "stream_natural_boundaries",
+    "stream_tts_warmup",
     "stream_tts_queue_size",
     "stream_sentence_min_chars",
     "stream_sentence_max_chars",

@@ -8,12 +8,18 @@ import shutil
 import shlex
 import struct
 import subprocess
+import tempfile
+from math import isfinite
 import wave
 from dataclasses import replace
 from pathlib import Path
 
 from .config import AppConfig, is_windows_platform
 from .piper_session import PiperSessionFactory
+
+# Fixed public warmup sentence: it is never counted as an answer, never played
+# and never stored in memory or the turn pipeline.
+WARMUP_SENTENCE = "准备好了。"
 
 
 class TTSAdapter:
@@ -31,6 +37,7 @@ class TTSAdapter:
     def __init__(self, cfg: AppConfig):
         self.cfg = cfg
         self._streaming_session: PiperSessionFactory | None = None
+        self._warmup_done = False
 
     def synthesize(self, text: str, out_wav: Path) -> None:
         out_wav.parent.mkdir(parents=True, exist_ok=True)
@@ -70,6 +77,36 @@ class TTSAdapter:
             self.cfg, one_shot=streaming._piper_tts
         )
         return streaming
+
+    def warmup(self, *, timeout_seconds: float = 5.0) -> bool:
+        """Synthesize one fixed short sentence once, without playback or events.
+
+        Returns False when this adapter owns no persistent Piper session (sync,
+        mock, edge, opt-out) and never creates a process or file in that case.
+        Repeating a successful warmup is a no-op; a failed warmup stays
+        retryable and normal synthesis is unaffected.
+        """
+
+        factory = self._streaming_session
+        if factory is None:
+            return False
+        if self._warmup_done:
+            return True
+        if isinstance(timeout_seconds, bool) or not isfinite(float(timeout_seconds)) or timeout_seconds <= 0:
+            raise ValueError("warmup timeout must be finite and positive")
+        effective = min(5.0, float(timeout_seconds), float(self.cfg.tts_piper_timeout_seconds))
+        self.cfg.output_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix="srtp-warmup-",
+            dir=str(self.cfg.output_dir),
+        ) as temp_dir:
+            factory.synthesize(
+                WARMUP_SENTENCE,
+                Path(temp_dir) / "warmup.wav",
+                timeout_seconds=max(0.1, effective),
+            )
+            self._warmup_done = True
+            return True
 
     def close(self) -> None:
         """Release any persistent piper process owned by this adapter."""

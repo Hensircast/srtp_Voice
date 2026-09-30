@@ -14,6 +14,7 @@ the same bounded timeout.
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 import threading
 import time
@@ -338,12 +339,29 @@ class PersistentPiperSession:
             pass
 
     # -- synthesis --------------------------------------------------------- #
-    def synthesize(self, text: str, out_wav: Path) -> PiperReply:
+    def synthesize(
+        self,
+        text: str,
+        out_wav: Path,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> PiperReply:
         clean_text = text.strip()
         if not clean_text:
             raise ValueError("piper TTS text must not be empty")
+        if timeout_seconds is not None and (
+            isinstance(timeout_seconds, bool)
+            or not math.isfinite(float(timeout_seconds))
+            or timeout_seconds <= 0
+        ):
+            raise ValueError("piper timeout override must be finite and positive")
         out_wav = Path(out_wav).resolve()
         out_wav.parent.mkdir(parents=True, exist_ok=True)
+        effective_timeout = (
+            max(1.0, float(self.cfg.tts_piper_timeout_seconds))
+            if timeout_seconds is None
+            else max(0.1, float(timeout_seconds))
+        )
         with self._lock:
             self._ensure_running()
             out_wav.unlink(missing_ok=True)
@@ -353,7 +371,7 @@ class PersistentPiperSession:
             )
             process = self._process
             assert process is not None  # _ensure_running guarantees this
-            deadline = time.monotonic() + max(1.0, float(self.cfg.tts_piper_timeout_seconds))
+            deadline = time.monotonic() + effective_timeout
             try:
                 process.stdin.write(request + "\n")  # type: ignore[union-attr]
                 process.stdin.flush()  # type: ignore[union-attr]
@@ -465,7 +483,13 @@ class PiperSessionFactory:
     def session_started(self) -> bool:
         return self._session is not None and self._session.started
 
-    def synthesize(self, text: str, out_wav: Path) -> None:
+    def synthesize(
+        self,
+        text: str,
+        out_wav: Path,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> None:
         session = self._get_session()
         if session is None:
             if self._one_shot is None:  # pragma: no cover - wiring guarantees it
@@ -474,7 +498,12 @@ class PiperSessionFactory:
             return
         # Failed synthesis is never silently retried with a different backend.
         # Operators can explicitly opt out via TTS_PIPER_PERSISTENT=0.
-        session.synthesize(text, out_wav)
+        if timeout_seconds is None:
+            session.synthesize(text, out_wav)
+        else:
+            # Only the optional warmup passes an override; normal synthesis
+            # keeps the configured timeout exactly as before.
+            session.synthesize(text, out_wav, timeout_seconds=timeout_seconds)
 
     def _get_session(self) -> PersistentPiperSession | None:
         if self._disabled:
