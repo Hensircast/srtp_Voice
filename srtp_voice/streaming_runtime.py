@@ -388,7 +388,7 @@ class StreamingResponseRuntime:
                 history,
                 turn_id=handle.turn_id,
             )
-            diagnostics_emitted = False
+            pending_diagnostics: Dict[str, Any] = {}
             try:
                 for token in token_stream:
                     self._raise_if_cancelled(handle)
@@ -404,21 +404,12 @@ class StreamingResponseRuntime:
                         preview = chunker.peek_pending_hard_boundary()
                         if preview is not None:
                             queue_hard_boundary_preview(preview)
-                    if getattr(token, "is_final", False) and not diagnostics_emitted:
-                        # Text is handled first, then at most one sanitized
-                        # diagnostics event per run; it never blocks speech.
-                        cleaned = sanitize_llm_diagnostics(
+                    if getattr(token, "is_final", False) and not pending_diagnostics:
+                        # Collect the first valid final report, but do not call
+                        # a potentially slow sink before flushing pending text.
+                        pending_diagnostics = sanitize_llm_diagnostics(
                             getattr(token, "diagnostics", None)
                         )
-                        if cleaned:
-                            diagnostics_emitted = True
-                            # Emit exactly the cleaned copy: unknown or private
-                            # fields must never reach the event stream.
-                            self.emit(
-                                handle,
-                                StreamEventType.LLM_DIAGNOSTICS,
-                                cleaned,
-                            )
             finally:
                 # Normal completion, cancellation and consumption errors all
                 # release the inner HTTP reader instead of leaving it to gc.
@@ -440,6 +431,11 @@ class StreamingResponseRuntime:
                 raise RuntimeError("Sentence chunks do not reconstruct the final reply text")
             if speech_sequence == 0:
                 raise RuntimeError("Streaming LLM produced no TTS-speakable reply text")
+
+            if pending_diagnostics:
+                # A reply without punctuation is now already queued for TTS;
+                # diagnostics-sink latency cannot hold its first speech back.
+                self.emit(handle, StreamEventType.LLM_DIAGNOSTICS, pending_diagnostics)
 
             self._tts_worker.join()
             self._raise_if_cancelled(handle)
