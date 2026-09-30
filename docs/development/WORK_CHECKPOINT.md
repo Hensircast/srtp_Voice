@@ -5,7 +5,7 @@
 ## 当前目标、授权与位置
 
 - 用户要求全项目代码审查、迭代优化响应速度与体验，重点减少语音机械感。基线 `49bbb6d9f18630624b67fb14014df3153eee18ff`，开始时工作树干净。
-- 当前分支 `codex/v1.8-natural-voice`，[Draft PR #25](https://github.com/Hensircast/srtp_Voice/pull/25)，base 为 `codex/v1.8-workbench`；代码提交 `7761a718a7da779ecde888c528014f9703fe9866` 已推送并核实远端存在，未合并。文档保存提交的新 HEAD/CI 仍须在线核对。
+- 当前分支 `codex/v1.8-natural-voice`，[Draft PR #25](https://github.com/Hensircast/srtp_Voice/pull/25)，base 为 `codex/v1.8-workbench`；最新代码提交 `1d62616b11aa4d8373f1a35f6b841eafc1ccc460` 已推送、双平台 CI 成功、已收到 Review 线程解决，未合并。附属文档提交的实际 HEAD/CI 与复审以在线 PR 和本地 codex-evidence.json 最新状态为准。
 - 已授权本仓库必要代码/文档读写、发送到既有 dsh 工作区、回归、显式路径暂存、功能分支提交推送、Draft PR/CI/Review。禁止项沿用 AGENTS.md；不合并、不改 main/global/ACL、不外发录音/私人对话/权重/凭证。
 - 下载、训练、安装、付费与峰值磁盘预算没有新增授权，本轮均未执行；必要时再集中确认，不能从界面“完全权限”继承。
 
@@ -30,19 +30,20 @@
 - 基线 [CI 36573909027](https://github.com/Hensircast/srtp_Voice/actions/runs/36573909027) 对应 `49bbb6d`，Windows/Ubuntu 各 601 项成功；不得用它替代本轮新 SHA 的 CI。
 - #25 已在实际 SHA 存在后[请求 Codex Review](https://github.com/Hensircast/srtp_Voice/pull/25#issuecomment-5903599378)，返回 P2 数字后句号永久误保护（thread `PRRT_kwDOSvoFtc6nYL3n`）；不是审批通过。
 - 文档 HEAD `8b99f7e` 的 CI 36665793150 双平台各 666 项成功。Codex 独立复现 Review **4 failed/2 passed/0.26s**，原 dsh 于 11:52 有限修复，日志 **47 passed/1.75s**；助手报告 source_head/自然件子计数沿用旧值，不当现场事实，且其单字符工具调用超过批准 8 次（已承认，停止），不静默扩大预算。
-- Codex 加测普通空白与慢 token 续接，再出现 **2 failed/8 passed/0.25s**；直接补最小超时保护、统一 lookahead 与候选清理，定向 **54 passed/2.85s**、完整 **676 passed/39.61s**。当前待新修复提交/CI成功后才能回复解决线程，不用旧666项绿灯替代。
+- Codex 加测普通空白与慢 token 续接，再出现 **2 failed/8 passed/0.25s**；直接补最小超时保护、统一 lookahead 与候选清理，定向 **54 passed/2.85s**、完整 **676 passed/39.61s**。
+- 修复 `1d62616` 的 [CI 36667012047](https://github.com/Hensircast/srtp_Voice/actions/runs/36667012047) 已核实 Windows **676 passed/22.44s**、Ubuntu **676 passed/14.46s**，编译与 pip check 均成功。随后带证据[回复并解决该线程](https://github.com/Hensircast/srtp_Voice/pull/25#discussion_r4140694450)，再请求复审；无新结论时保持待审，不冒充批准。
 
 ## DeepSeek、环境与资源现场
 
 - 复用已登录桌面 `E:/dsh_app/DeepSeek Harness.exe` 原“SRTP 工作台试点读取核验”，没有新对话/第二服务/认证绕过。最新已完成 **21 轮/349 步**，界面空闲、无停止生成提示；完整验证进程已退出，未按历史 PID 杀进程。应用保留开启，无新任务。
 - UI 标识 DeepSeek-V41-Flash/Max/完全权限，不冒充底层审计。DeepSeek 剩余额度不可读，累计 125M token/99% 缓存不是剩余额度或受控节省证据；仅有限批派工，当前无新任务。
-- Codex 最近剩余约 **58%（5h）/35%（7d）**，读数可能延迟；沿用 10% 减批/7% 保存，不兑换或无限续跑。
+- Codex 最近剩余约 **44%（5h）/33%（7d）**，读数可能延迟；沿用 10% 减批/7% 保存，不兑换或无限续跑。
 - Python 3.12.10，现有依赖/音频 metadata/Piper/SER 只读自检正常。默认 `127.0.0.1:11434` TCP 超时且监听条目 0：当时默认 Ollama 服务不可用，不证明模型缺失，不重装/换模型/自行启动第二实例。
 - 本轮下载/安装/训练/付费均 **0**，公开文本测试 WAV 本地生成且保持忽略。最近可访问元数据 **65416 文件 / 2,895,508,537 bytes（2.697 GiB）/1 个读取错误**，只是占用下界；没有改 ACL 来消除读取缺口。
 
 ## 尚未完成与恢复顺序
 
 1. 核对额度、HEAD/dirty、原 dsh 闲置和本轮证据；不重复实现、测试并发或投递同一任务。
-2. #25 已创建并附到当前聊天，不重复创建；数字句号 Review 本地已修，先核实修复实际 HEAD/CI与线程是否闭环，避免重复提交/回复。合理新意见验证修复、通过并推送后再回复解决；无结论/错误如实记录。
+2. #25 已创建并附到当前聊天；数字句号 Review 已修复推送、双平台 676 项通过、带证据回复解决，不重复实现/提交/回复。恢复先核实实际 HEAD/CI 和复审；合理新意见验证修复、通过并推送后再回复解决；无结论/错误如实记录。
 3. 按自然语音文档的新 GUID 目录和同轮配置快照做真实 6–10 轮复测，分开首次/后续，评估碎句、空档、措辞、取消与 endpoint_to_playback；若 Ollama 未运行，用户先开启已有服务，保持原模型/实际配置地址。
 4. 不因 Piper 复用数字好看就更换声线或下载权重；声线自然度下一步须有真人反馈和对应授权。
