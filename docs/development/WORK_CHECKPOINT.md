@@ -13,10 +13,11 @@
 
 ## 当前已验证结果
 
+- ASR代码`f38716e8e12901e19cb1ee7e0fdd7d4a7744e849`已推送；[CI36709843039](https://github.com/Hensircast/srtp_Voice/actions/runs/36709843039)对应该实际SHA，Windows **727 passed/24.31s**、Ubuntu **727 passed/16.64s**，编译/pip check均成功。[新复审已请求](https://github.com/Hensircast/srtp_Voice/pull/25#issuecomment-5910423969)，未解决线程0、结果尚待返回，不称审查批准。附属文档HEAD的CI另按实际Git/在线核实。
 - 流式16k PCM16不再经临时WAV中转，其他速率/后端/自定义adapter缺hook或开关0仍走原路径；同步文件API、正式输入WAV、VAD与final-only流程不变。65,536个PCM16值与真实安装解码器完全相等；两个纯中转中位记录109.1635→0.0865ms、79.957→0.059ms（不含模型推理）。同一公开合成句真实离线模型4次文本非空/hash一致，WAV→内存→内存→WAV为1982.396/1634.752/1615.348/1706.436ms，不承诺普遍/端到端改善。
 - ASR失败历史：独立先10 failed/1.12s；助手targeted-1/3为1 failed/60 passed，targeted-2为1 failed/9 passed（均独立保留）。Codex独立1 failed/48 passed/1.11s确认自有测试非法flag期望错误；新增采样率2 failed/1 passed/0.52s捕获int截断。交回dsh按具体要求修正，targeted-4 **64 passed/2.50s**。独立测试未修改，助手报告承认默认配置误判；full727全部通过，无skip掩盖失败。
 - 初次真实模型探测整仓库快照IncompleteSnapshotError；按库相同必需文件清单local_files_only重新核实后，已有缓存模型正常加载。未下载、未重装，不将过严探测当真实模型缺失。原始两份报告均保留。
-- 预热代码提交 `82017135bd36eb2b2c1017aecc9636ee26b90751` 已推送；[CI 36671312980](https://github.com/Hensircast/srtp_Voice/actions/runs/36671312980) 对应该实际 SHA，Windows **704 passed/29.13s**、Ubuntu **704 passed/16.65s**，编译/pip check均成功。新复审已[请求](https://github.com/Hensircast/srtp_Voice/pull/25#issuecomment-5904410287)，截至本次交接尚未返回；没有未解决的旧线程，不称新审查批准。最终附属文档 HEAD 的 CI 另按实际 Git/在线核实。
+- 此前预热代码`8201713`及文档`5a2c1a5`双平台704项CI已验证；预热[复审已返回无重大问题](https://github.com/Hensircast/srtp_Voice/pull/25#issuecomment-5904481921)，不是随后ASR代码的批准。没有未解决的旧线程，PR保持Draft未合并。
 - 预热配对：未预热首句 **560.000/580.781 ms**，预热后 **247.738/238.604 ms**；监听前准备 **476.709/470.573 ms**，准备加首句 **724.447/709.177 ms**，总量反而增加128–164ms。只声称首句 TTS 等待转移，不声称整体冷启动/endpoint 或自然度已改善。没有换模型/声线、没有录音/播放。
 - 失败历史保留：独立先8 failed/1.00s；助手三轮11 failed/65 passed、3 failed/73 passed、2 failed/74 passed，分别targeted-{1,2,3}.log；独立再5 failed/3 passed/0.84s。助手将属性调用错误误判成测试桩；报告称.env.example已更新但当时无差异，均由Codex核对修正。自动审查拒绝改独立断言的补丁，最终独立测试未修改，在代码侧实现严格新开关及异常契约；未绕过拒绝。
 
@@ -48,7 +49,7 @@
 
 - 复用已登录桌面 `E:/dsh_app/DeepSeek Harness.exe` 原“SRTP 工作台试点读取核验”，没有新对话/第二服务/认证绕过。最新已完成 **24轮/394步**，界面空闲、无新任务；full与模型核查均退出，最新Python/Piper进程数 **0**，未按历史PID杀进程。应用保留开启。
 - UI标识DeepSeek-V41-Flash/Max/完全权限，不冒充底层审计。DeepSeek剩余额度不可读，累计154M token/99%缓存、上下文66%不是余额或受控节省证据；有限批已结束，无新任务。
-- 本批full及模型核查后Codex剩余约 **91%（5h）/25%（7d）**，读数可能延迟；只完成本批提交/CI/Review，不为额度重置擅自开更多批次，沿用10%减批/7%保存，不兑换/无限续跑。
+- 本批代码CI核查后Codex剩余约 **88%（5h）/25%（7d）**，读数可能延迟；只完成本批交接/最终CI/Review检查，不为额度重置擅自开更多批次，沿用10%减批/7%保存，不兑换/无限续跑。
 - Python 3.12.10，现有依赖/音频 metadata/Piper/SER 只读自检正常。默认 `127.0.0.1:11434` TCP 超时且监听条目 0：当时默认 Ollama 服务不可用，不证明模型缺失，不重装/换模型/自行启动第二实例。
 - 本轮下载/安装/训练/付费均 **0**，只读取既有模型缓存、公开文本音频，本地产物忽略不提交。最近同口径可访问元数据 **67526文件 / 2,905,789,299 bytes（约2.706GiB）/1读取错误**，只是项目占用下界，不含仓库外既有模型缓存。默认受限读取另报57423文件/95错误，不据此声称占用下降；没有改ACL消除缺口。
 
