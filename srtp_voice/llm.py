@@ -109,6 +109,25 @@ class _EchoOnlyStreamError(LLMResponseError):
 STREAMING_FALLBACK_REPLY = "抱歉，我没有生成可靠的回答，请换一种说法再试一次。"
 
 
+def _close_quietly(target: Any) -> None:
+    """Release an optional resource without masking the primary failure.
+
+    GeneratorExit, cancellation and the original read/submit error must keep
+    propagating, so only ordinary cleanup exceptions are swallowed here;
+    KeyboardInterrupt and SystemExit are never suppressed.
+    """
+
+    if target is None:
+        return
+    close = getattr(target, "close", None)
+    if not callable(close):
+        return
+    try:
+        close()
+    except Exception:
+        pass
+
+
 def _require_requests():
     if requests is None:
         raise RuntimeError(
@@ -258,18 +277,24 @@ class StrategyGenerator:
 
         def emit(parts: Iterable[str]) -> Iterator[TextChunk]:
             nonlocal sequence, emitted_text
-            for part in parts:
-                if not part:
-                    continue
-                emitted_text = True
-                yield TextChunk(
-                    text=part,
-                    is_final=False,
-                    timestamp_ms=int(monotonic() * 1000),
-                    turn_id=turn_id,
-                    sequence_id=sequence,
-                )
-                sequence += 1
+            part_iterator = iter(parts)
+            try:
+                for part in part_iterator:
+                    if not part:
+                        continue
+                    emitted_text = True
+                    yield TextChunk(
+                        text=part,
+                        is_final=False,
+                        timestamp_ms=int(monotonic() * 1000),
+                        turn_id=turn_id,
+                        sequence_id=sequence,
+                    )
+                    sequence += 1
+            finally:
+                # An early stop or GeneratorExit must still release the inner
+                # stream reader; plain lists simply have no close().
+                _close_quietly(part_iterator)
 
         try:
             req = _require_requests()
@@ -457,32 +482,36 @@ class StrategyGenerator:
                 "num_ctx": self.cfg.llm_context_tokens,
             },
         }
-        try:
-            response = req.post(
-                self.cfg.llm_ollama_chat_url,
-                json=payload,
-                timeout=self.cfg.llm_timeout_seconds,
-                stream=True,
-            )
-            response.raise_for_status()
-        except req.Timeout as exc:
-            raise RuntimeError("Ollama streaming request timed out.") from exc
-        except req.HTTPError as exc:
-            status = exc.response.status_code if exc.response is not None else "unknown"
-            response_text = exc.response.text[:500] if exc.response is not None else ""
-            detail = f" Response body: {response_text}" if response_text else ""
-            raise RuntimeError(f"Ollama streaming returned HTTP {status}.{detail}") from exc
-        except req.RequestException as exc:
-            raise RuntimeError(
-                f"Cannot connect to Ollama at {self.cfg.llm_ollama_chat_url}."
-            ) from exc
-
+        response: Any = None
+        bodies: Any = None
         saw_done = False
         saw_content = False
         try:
             try:
-                bodies = _iter_ndjson_objects(response.iter_content(chunk_size=1))
-                for body in bodies:
+                response = req.post(
+                    self.cfg.llm_ollama_chat_url,
+                    json=payload,
+                    timeout=self.cfg.llm_timeout_seconds,
+                    stream=True,
+                )
+                response.raise_for_status()
+            except req.Timeout as exc:
+                raise RuntimeError("Ollama streaming request timed out.") from exc
+            except req.HTTPError as exc:
+                status = exc.response.status_code if exc.response is not None else "unknown"
+                response_text = exc.response.text[:500] if exc.response is not None else ""
+                detail = f" Response body: {response_text}" if response_text else ""
+                raise RuntimeError(
+                    f"Ollama streaming returned HTTP {status}.{detail}"
+                ) from exc
+            except req.RequestException as exc:
+                raise RuntimeError(
+                    f"Cannot connect to Ollama at {self.cfg.llm_ollama_chat_url}."
+                ) from exc
+
+            try:
+                bodies = response.iter_content(chunk_size=1)
+                for body in _iter_ndjson_objects(bodies):
                     error = body.get("error")
                     if error:
                         raise LLMResponseError(f"Ollama stream error: {error}")
@@ -507,15 +536,19 @@ class StrategyGenerator:
                 raise RuntimeError("Ollama text stream timed out while reading.") from exc
             except req.RequestException as exc:
                 raise RuntimeError("Ollama text stream was interrupted.") from exc
-        finally:
-            close = getattr(response, "close", None)
-            if callable(close):
-                close()
+            finally:
+                # Only the reader is closed here; the response is closed by the
+                # outermost finally, and a read failure must not stop that.
+                _close_quietly(bodies)
 
-        if not saw_done:
-            raise LLMResponseError("Ollama text stream ended before done=true.")
-        if not saw_content:
-            raise LLMResponseError("Ollama returned an empty text stream.")
+            if not saw_done:
+                raise LLMResponseError("Ollama text stream ended before done=true.")
+            if not saw_content:
+                raise LLMResponseError("Ollama returned an empty text stream.")
+        finally:
+            # Covers the status error too: the response exists by then, so it is
+            # always released; post failures leave it None and nothing closes.
+            _close_quietly(response)
 
     @staticmethod
     def _validated_stream_reply(
@@ -527,20 +560,25 @@ class StrategyGenerator:
         buffered: List[str] = []
         safe_to_emit = _is_explicit_repeat_request(user_text)
         normalized_user = _normalize_echo_text(user_text)
-        for token in tokens:
-            buffered.append(token)
-            if not safe_to_emit:
-                candidate = "".join(buffered)
-                normalized_candidate = "".join(candidate.strip().casefold().split())
-                without_trailing = normalized_candidate.rstrip(_ECHO_TRAILING_PUNCTUATION)
-                safe_to_emit = not (
-                    not without_trailing
-                    or normalized_user.startswith(without_trailing)
-                    or without_trailing == normalized_user
-                )
-            if safe_to_emit:
-                yield "".join(buffered)
-                buffered.clear()
+        token_iterator = iter(tokens)
+        try:
+            for token in token_iterator:
+                buffered.append(token)
+                if not safe_to_emit:
+                    candidate = "".join(buffered)
+                    normalized_candidate = "".join(candidate.strip().casefold().split())
+                    without_trailing = normalized_candidate.rstrip(_ECHO_TRAILING_PUNCTUATION)
+                    safe_to_emit = not (
+                        not without_trailing
+                        or normalized_user.startswith(without_trailing)
+                        or without_trailing == normalized_user
+                    )
+                if safe_to_emit:
+                    yield "".join(buffered)
+                    buffered.clear()
+        finally:
+            # Releasing this iterator also releases the HTTP stream underneath.
+            _close_quietly(token_iterator)
 
         if buffered:
             reply = "".join(buffered)

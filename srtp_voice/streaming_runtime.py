@@ -381,25 +381,38 @@ class StreamingResponseRuntime:
 
         try:
             self.emit(handle, StreamEventType.LLM_REQUEST_STARTED)
-            for token in self.generator.generate_stream(
+            token_stream = self.generator.generate_stream(
                 user_text,
                 emotion,
                 history,
                 turn_id=handle.turn_id,
-            ):
-                self._raise_if_cancelled(handle)
-                if token.text:
-                    raw_parts.append(token.text)
-                    self.emit(
-                        handle,
-                        StreamEventType.LLM_TOKEN,
-                        {"text": token.text, "token_sequence": token.sequence_id},
-                    )
-                    for sentence in chunker.feed(token.text):
-                        queue_sentence(sentence)
-                    preview = chunker.peek_pending_hard_boundary()
-                    if preview is not None:
-                        queue_hard_boundary_preview(preview)
+            )
+            try:
+                for token in token_stream:
+                    self._raise_if_cancelled(handle)
+                    if token.text:
+                        raw_parts.append(token.text)
+                        self.emit(
+                            handle,
+                            StreamEventType.LLM_TOKEN,
+                            {"text": token.text, "token_sequence": token.sequence_id},
+                        )
+                        for sentence in chunker.feed(token.text):
+                            queue_sentence(sentence)
+                        preview = chunker.peek_pending_hard_boundary()
+                        if preview is not None:
+                            queue_hard_boundary_preview(preview)
+            finally:
+                # Normal completion, cancellation and consumption errors all
+                # release the inner HTTP reader instead of leaving it to gc.
+                close_stream = getattr(token_stream, "close", None)
+                if callable(close_stream):
+                    try:
+                        close_stream()
+                    except Exception:
+                        # Cleanup must not replace cancellation or a reader /
+                        # sentence-submission failure with an unrelated error.
+                        pass
 
             reply_text = "".join(raw_parts)
             if not reply_text.strip():
