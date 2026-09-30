@@ -370,7 +370,8 @@ def _protected_point(text: str, index: int) -> bool | None:
     )
     if token not in _ABBREVIATIONS and not initial and not initialism:
         return bool(
-            token and len(token) <= 2 and token.isalpha() and following.isalpha()
+            token and len(token) <= 2 and token.isalpha()
+            and following.isascii() and following.isalpha()
         )
 
     lookahead = text[index + 1 :].lstrip()
