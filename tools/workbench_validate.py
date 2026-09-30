@@ -97,29 +97,50 @@ def resolve_test_targets(
     return resolved
 
 
+def _validated_max_failures(max_failures: int | None) -> int | None:
+    """Accept only a real positive int; ``None`` keeps the old behaviour."""
+
+    if max_failures is None:
+        return None
+    if isinstance(max_failures, bool) or not isinstance(max_failures, int):
+        raise ValidationError("max_failures must be a positive integer or None")
+    if max_failures <= 0:
+        raise ValidationError("max_failures must be a positive integer or None")
+    return max_failures
+
+
 def build_plan(
     profile: str,
     targets: Sequence[str] = (),
     *,
     root: Path | None = None,
     tests_dir: Path | None = None,
+    max_failures: int | None = None,
 ) -> list[list[str]]:
     """Return the exact argv sequences for ``profile`` without running them."""
 
     if profile not in PROFILES:
         raise ValidationError(f"unknown profile: {profile}")
     python = sys.executable
+    limit = _validated_max_failures(max_failures)
     if profile == "manual":
         if targets:
             raise ValidationError("manual profile does not accept test targets")
+        if limit is not None:
+            raise ValidationError("manual profile does not run pytest")
         return []
     if profile != "targeted" and targets:
         raise ValidationError(f"profile {profile} does not accept test targets")
+    pytest_flags = ["-q"]
+    if limit is not None:
+        # Only the pytest argv grows: compileall and pip check are untouched and
+        # no extra process is started.
+        pytest_flags.append(f"--maxfail={limit}")
     if profile == "targeted":
         selected = resolve_test_targets(targets, tests_dir=tests_dir, root=root)
-        return [[python, "-m", "pytest", "-q", *selected]]
+        return [[python, "-m", "pytest", *pytest_flags, *selected]]
     plan = [[python, "-m", "compileall", "-q", *COMPILE_TARGETS]]
-    plan.append([python, "-m", "pytest", "-q", PYTEST_TARGET])
+    plan.append([python, "-m", "pytest", *pytest_flags, PYTEST_TARGET])
     if profile == "full":
         plan.append([python, "-m", "pip", "check"])
     return plan
@@ -166,8 +187,15 @@ def run_validation(
     root: Path | None = None,
     tests_dir: Path | None = None,
     runner: Callable[..., subprocess.CompletedProcess] | None = None,
+    max_failures: int | None = None,
 ) -> ValidationOutcome:
-    plan = build_plan(profile, targets, root=root, tests_dir=tests_dir)
+    plan = build_plan(
+        profile,
+        targets,
+        root=root,
+        tests_dir=tests_dir,
+        max_failures=max_failures,
+    )
     if profile == "manual":
         return ValidationOutcome(
             profile=profile,
@@ -210,12 +238,25 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
     parser = subparsers.add_parser("validate", help="run the shared validation profiles")
     parser.add_argument("--profile", required=True, choices=list(PROFILES))
     parser.add_argument("tests", nargs="*", help="explicit tests/ files for --profile targeted")
+    parser.add_argument(
+        "--max-failures",
+        type=int,
+        default=None,
+        help=(
+            "optional positive integer: append --maxfail=N to the pytest command "
+            "only (default: unchanged, no limit)"
+        ),
+    )
     parser.set_defaults(handler=_handle)
 
 
 def _handle(args: argparse.Namespace) -> int:
     try:
-        outcome = run_validation(args.profile, args.tests)
+        outcome = run_validation(
+            args.profile,
+            args.tests,
+            max_failures=getattr(args, "max_failures", None),
+        )
     except ValidationError as exc:
         print(f"validation error: {exc}")
         return 2

@@ -49,6 +49,21 @@ sounddevice / PortAudio / 默认输入输出设备）、Piper 与 SER 模型文�
 - 退出码：`0` = 全部通过，其他 = 子进程退出码，`manual` 恒为 `0`（未运行任何测试）。
 - CI 只调用该统一入口，不再重复散落 compileall / pytest / pip check。
 
+### 可选失败限额 `--max-failures`
+
+```bash
+python -m tools.workbench validate --profile full --max-failures 3
+python -m tools.workbench validate --profile targeted --max-failures 1 tests/test_workbench.py
+```
+
+- 默认不传该参数时**行为与之前完全一致**：argv、工作目录、`shell=False`、退出码与
+  `KeyboardInterrupt` 契约都不变。
+- 只接受真正的正整数；`0`、负数、浮点、字符串等非法值在启动子进程**之前**就被拒绝并返回 `2`。
+- 生效范围仅限 pytest：只给 pytest 追加 `--maxfail=N`，`compileall` 与 `pip check` 不受影响，
+  也不会另起进程。`manual` 不执行 pytest，带该参数直接拒绝。
+- 它只是让 pytest 在累计到 N 个失败后自行停止，**不是**墙钟超时，也不会强制终止线程或进程；
+  退出码仍是子进程真实退出码，因此不能据此声称修复了卡住、更没有产品提速含义。
+
 ## baseline：延迟基线
 
 ```bash
