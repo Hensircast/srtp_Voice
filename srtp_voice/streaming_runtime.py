@@ -25,6 +25,7 @@ from .streaming import (
     TextChunk,
     TurnTimingSnapshot,
     is_speakable_text,
+    sanitize_llm_diagnostics,
 )
 from .streaming_asr import (
     IncrementalASRSession,
@@ -387,6 +388,7 @@ class StreamingResponseRuntime:
                 history,
                 turn_id=handle.turn_id,
             )
+            diagnostics_emitted = False
             try:
                 for token in token_stream:
                     self._raise_if_cancelled(handle)
@@ -402,6 +404,21 @@ class StreamingResponseRuntime:
                         preview = chunker.peek_pending_hard_boundary()
                         if preview is not None:
                             queue_hard_boundary_preview(preview)
+                    if getattr(token, "is_final", False) and not diagnostics_emitted:
+                        # Text is handled first, then at most one sanitized
+                        # diagnostics event per run; it never blocks speech.
+                        cleaned = sanitize_llm_diagnostics(
+                            getattr(token, "diagnostics", None)
+                        )
+                        if cleaned:
+                            diagnostics_emitted = True
+                            # Emit exactly the cleaned copy: unknown or private
+                            # fields must never reach the event stream.
+                            self.emit(
+                                handle,
+                                StreamEventType.LLM_DIAGNOSTICS,
+                                cleaned,
+                            )
             finally:
                 # Normal completion, cancellation and consumption errors all
                 # release the inner HTTP reader instead of leaving it to gc.

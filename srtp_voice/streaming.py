@@ -29,6 +29,9 @@ class TextChunk:
     session_id: str = ""
     turn_id: str = ""
     sequence_id: int = 0
+    # Local, numeric-only diagnostics (for example the server-side timings of
+    # one LLM request). Never part of the TTS/LLM text input.
+    diagnostics: Dict[str, Any] = field(default_factory=dict)
 
 
 class AudioInputStream(Protocol):
@@ -67,6 +70,7 @@ class StreamEventType(str, Enum):
     ASR_FINAL = "asr_final"
     LLM_REQUEST_STARTED = "llm_request_started"
     LLM_TOKEN = "llm_token"
+    LLM_DIAGNOSTICS = "llm_diagnostics"
     SENTENCE_READY = "sentence_ready"
     TTS_STARTED = "tts_started"
     AUDIO_CHUNK_READY = "audio_chunk_ready"
@@ -180,18 +184,97 @@ _TIMING_MARKS = {
 }
 
 
+_DIAGNOSTICS_DURATION_FIELDS = (
+    "server_total_ms",
+    "model_load_ms",
+    "input_processing_ms",
+    "generation_ms",
+)
+_DIAGNOSTICS_COUNT_FIELDS = (
+    "input_tokens",
+    "input_cached_tokens",
+    "output_tokens",
+)
+_DIAGNOSTICS_MAX_ENTRIES = 4
+_DIAGNOSTICS_DURATION_MAX = (2**63 - 1) / 1e6
+_DIAGNOSTICS_COUNT_MAX = 2**63 - 1
+
+
+def _sanitize_diagnostics_number(value: Any, *, count: bool) -> Any:
+    """Return a clean whitelisted number, or None when it must be dropped."""
+
+    if isinstance(value, bool):
+        return None
+    if count:
+        if not isinstance(value, int):
+            return None
+        return value if 0 <= value <= _DIAGNOSTICS_COUNT_MAX else None
+    if not isinstance(value, (int, float)):
+        return None
+    # Range-check before isfinite so a huge int cannot raise OverflowError.
+    if value < 0 or value > _DIAGNOSTICS_DURATION_MAX:
+        return None
+    return float(value) if isfinite(value) else None
+
+
+def sanitize_llm_diagnostics(payload: Any) -> Dict[str, Any]:
+    """Copy only the seven whitelisted numeric server-timing fields.
+
+    Accepts a mapping whose ``llm_server_requests`` is a list/tuple, inspecting
+    at most the first four entries and never iterating an unbounded iterable.
+    Unknown keys, private text and malformed values are dropped rather than
+    coerced, and every kept entry is a fresh dict/list copy. Returns ``{}`` when
+    nothing valid remains.
+    """
+
+    if not isinstance(payload, Mapping):
+        return {}
+    raw_requests = payload.get("llm_server_requests")
+    if not isinstance(raw_requests, (list, tuple)):
+        return {}
+    cleaned: list[Dict[str, Any]] = []
+    # Slice first: a bounded sequence is never fully iterated.
+    for item in raw_requests[:4]:
+        if not isinstance(item, Mapping):
+            continue
+        entry: Dict[str, Any] = {}
+        for field in _DIAGNOSTICS_DURATION_FIELDS:
+            if field not in item:
+                continue
+            value = _sanitize_diagnostics_number(item[field], count=False)
+            if value is not None:
+                entry[field] = value
+        for field in _DIAGNOSTICS_COUNT_FIELDS:
+            if field not in item:
+                continue
+            value = _sanitize_diagnostics_number(item[field], count=True)
+            if value is not None:
+                entry[field] = value
+        if entry:
+            cleaned.append(entry)
+    if not cleaned:
+        return {}
+    return {"llm_server_requests": cleaned}
+
+
 @dataclass(frozen=True)
 class TurnTimingSnapshot:
     turn_id: str
     marks: Mapping[str, float]
     latencies_ms: Mapping[str, float]
+    # Optional: server-reported backend timings, kept out of latencies_ms.
+    backend_diagnostics: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        payload: Dict[str, Any] = {
             "turn_id": self.turn_id,
             "marks": dict(self.marks),
             "latencies_ms": dict(self.latencies_ms),
         }
+        cleaned = sanitize_llm_diagnostics(self.backend_diagnostics)
+        if cleaned:
+            payload["backend_diagnostics"] = cleaned
+        return payload
 
 
 class TurnTiming:
@@ -204,6 +287,7 @@ class TurnTiming:
         self._marks: Dict[str, float] = {}
         self._last_sequence = -1
         self._last_timestamp: float | None = None
+        self._backend_diagnostics: Dict[str, Any] = {}
 
     def observe(self, event: StreamEvent) -> None:
         if event.turn_id != self.turn_id:
@@ -217,6 +301,14 @@ class TurnTiming:
         self._last_sequence = event.sequence
         self._last_timestamp = event.timestamp
         mark = _TIMING_MARKS.get(event.event_type)
+        if event.event_type is StreamEventType.LLM_DIAGNOSTICS:
+            # Only the first valid report of this turn is kept, and it never
+            # contributes to the latency marks.
+            if not self._backend_diagnostics:
+                cleaned = sanitize_llm_diagnostics(event.payload)
+                if cleaned:
+                    self._backend_diagnostics = cleaned
+            return
         if mark is not None:
             if mark == "playback_finished":
                 # Multi-sentence playback must end at the LAST finished chunk,
@@ -254,7 +346,14 @@ class TurnTiming:
             add("turn_total_ms", "turn_started", "playback_finished")
         elif "turn_cancelled" in marks:
             add("turn_total_ms", "turn_started", "turn_cancelled")
-        return TurnTimingSnapshot(self.turn_id, marks, latencies)
+        return TurnTimingSnapshot(
+            self.turn_id,
+            marks,
+            latencies,
+            # A deep, cleaned copy: neither this snapshot nor a later one can be
+            # mutated through the other.
+            sanitize_llm_diagnostics(self._backend_diagnostics),
+        )
 
 
 def _percentile(values: list[float], percentile: float) -> float:

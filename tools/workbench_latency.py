@@ -30,6 +30,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable, Mapping, Sequence
 
 from srtp_voice.config import AppConfig
+from srtp_voice.streaming import sanitize_llm_diagnostics
 
 from .workbench import (
     PathEscapeError,
@@ -219,8 +220,20 @@ def _sanitize_turn(
             latencies[key] = _require_non_negative(
                 value, f"turns[{index}].latencies_ms.{key}"
             )
+    cleaned_turn: dict[str, Any] = {
+        "turn_id": turn_id,
+        "marks": marks,
+        "latencies_ms": latencies,
+    }
+    raw_diagnostics = turn.get("backend_diagnostics")
+    if raw_diagnostics is not None:
+        # Same whitelist as the runtime: only the seven numeric server fields
+        # survive, so no model name, url, prompt or reply text can be exported.
+        safe_diagnostics = sanitize_llm_diagnostics(raw_diagnostics)
+        if safe_diagnostics:
+            cleaned_turn["backend_diagnostics"] = safe_diagnostics
     return (
-        {"turn_id": turn_id, "marks": marks, "latencies_ms": latencies},
+        cleaned_turn,
         ignored_marks + ignored_latencies,
         int(renamed),
     )

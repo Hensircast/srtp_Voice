@@ -4,7 +4,7 @@ import codecs
 import json
 import threading
 from time import monotonic
-from typing import Any, Callable, Dict, Iterable, Iterator, List
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping
 
 try:
     import requests
@@ -108,6 +108,56 @@ class _EchoOnlyStreamError(LLMResponseError):
 
 
 STREAMING_FALLBACK_REPLY = "抱歉，我没有生成可靠的回答，请换一种说法再试一次。"
+
+
+_OLLAMA_DURATION_KEYS: Dict[str, str] = {
+    "total_duration": "server_total_ms",
+    "load_duration": "model_load_ms",
+    "prompt_eval_duration": "input_processing_ms",
+    "eval_duration": "generation_ms",
+}
+_OLLAMA_COUNT_KEYS: Dict[str, str] = {
+    "prompt_eval_count": "input_tokens",
+    "prompt_eval_cached_count": "input_cached_tokens",
+    "eval_count": "output_tokens",
+}
+_OLLAMA_TIMING_MAX = 2**63 - 1
+
+
+def _ollama_raw_int(value: Any) -> int | None:
+    """Accept only a real non-negative integer within the signed 64-bit range."""
+
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if value < 0 or value > _OLLAMA_TIMING_MAX:
+        return None
+    return value
+
+
+def _extract_ollama_server_timings(body: Any) -> Dict[str, Any]:
+    """Keep only the whitelisted numeric server timings of one NDJSON object.
+
+    Durations arrive as integer nanoseconds and are converted to milliseconds;
+    counts stay integers. Missing, negative, non-integer, non-finite or
+    out-of-range values are dropped, while zero is legal and is preserved.
+    Everything else (model, url, prompt, message, thinking, context, ...) is
+    discarded, so this can never carry user text or model identity.
+    """
+
+    if not isinstance(body, Mapping):
+        return {}
+    extracted: Dict[str, Any] = {}
+    for raw_key, target in _OLLAMA_DURATION_KEYS.items():
+        value = _ollama_raw_int(body.get(raw_key))
+        if value is None:
+            continue
+        extracted[target] = round(value / 1_000_000, 3)
+    for raw_key, target in _OLLAMA_COUNT_KEYS.items():
+        value = _ollama_raw_int(body.get(raw_key))
+        if value is None:
+            continue
+        extracted[target] = value
+    return extracted
 
 
 def _close_quietly(target: Any) -> None:
@@ -394,6 +444,8 @@ class StrategyGenerator:
                 # stream reader; plain lists simply have no close().
                 _close_quietly(part_iterator)
 
+        # Per-call, per-stream: never a class attribute, thread-local or global.
+        server_requests: List[Dict[str, Any]] = []
         try:
             messages = self._build_streaming_messages(user_text, emotion, history)
             req, leased = self._acquire_http_client()
@@ -410,7 +462,7 @@ class StrategyGenerator:
                 try:
                     parts = self._validated_stream_reply(
                         user_text,
-                        self._request_ollama_text_stream(req, messages),
+                        self._request_ollama_text_stream(req, messages, server_requests),
                     )
                     yield from emit(parts)
                 except _EchoOnlyStreamError:
@@ -424,6 +476,7 @@ class StrategyGenerator:
                                 self._request_ollama_text_stream(
                                     req,
                                     self._build_echo_repair_messages(user_text, history),
+                                    server_requests,
                                 ),
                             )
                         )
@@ -445,12 +498,19 @@ class StrategyGenerator:
 
         if not emitted_text:
             raise LLMResponseError("Ollama returned an empty text stream.")
+        final_diagnostics: Dict[str, Any] = {}
+        if server_requests:
+            # A per-request copy: the caller can never mutate our state, and the
+            # entries stay separate (the echo repair is its own request, not a
+            # part of any end-to-end figure).
+            final_diagnostics["llm_server_requests"] = [dict(item) for item in server_requests]
         yield TextChunk(
             text="",
             is_final=True,
             timestamp_ms=int(monotonic() * 1000),
             turn_id=turn_id,
             sequence_id=sequence,
+            diagnostics=final_diagnostics,
         )
 
     def _mock_generate(self, user_text: str, emotion: EmotionResult, history: List[Dict[str, Any]]) -> StrategyResult:
@@ -585,6 +645,7 @@ class StrategyGenerator:
         self,
         req: Any,
         messages: List[Dict[str, str]],
+        diagnostics: List[Dict[str, Any]] | None = None,
     ) -> Iterator[str]:
         payload = {
             "model": self.cfg.llm_model,
@@ -600,6 +661,7 @@ class StrategyGenerator:
         bodies: Any = None
         saw_done = False
         saw_content = False
+        completed_stats: Dict[str, Any] = {}
         try:
             try:
                 response = req.post(
@@ -644,6 +706,8 @@ class StrategyGenerator:
                                 "Ollama stream was truncated because done_reason=length. "
                                 "Increase LLM_MAX_TOKENS."
                             )
+                        if diagnostics is not None:
+                            completed_stats = _extract_ollama_server_timings(body)
                         saw_done = True
                         break
             except req.Timeout as exc:
@@ -659,6 +723,8 @@ class StrategyGenerator:
                 raise LLMResponseError("Ollama text stream ended before done=true.")
             if not saw_content:
                 raise LLMResponseError("Ollama returned an empty text stream.")
+            if diagnostics is not None and completed_stats:
+                diagnostics.append(dict(completed_stats))
         finally:
             # Covers the status error too: the response exists by then, so it is
             # always released; post failures leave it None and nothing closes.
