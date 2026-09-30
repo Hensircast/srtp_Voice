@@ -227,7 +227,25 @@ class StreamingResponseRuntime:
     ) -> None:
         self.cfg = cfg
         self.generator = generator
+        self._caller_tts = tts
         self.tts = tts
+        self._owned_streaming_resource: Any | None = None
+        # Streaming asks the adapter for its own session adapter; the caller's
+        # adapter keeps the one-shot CLI path. A returned resource that is not
+        # an adapter (for example a bare session) is still owned by this runtime
+        # and closed on failure/close. A factory exception closes only the
+        # resource it created, never the caller's shared adapter.
+        streaming_factory = getattr(tts, "for_streaming", None)
+        if callable(streaming_factory):
+            # A factory owns cleanup until it returns. Closing the caller here
+            # would invalidate a shared adapter when no resource was acquired.
+            produced = streaming_factory()
+            if produced is not None and produced is not tts:
+                has_synthesize = callable(getattr(produced, "synthesize", None))
+                if has_synthesize:
+                    self.tts = produced
+                else:
+                    self._owned_streaming_resource = produced
         self._archive_lock = threading.Lock()
         self._audio_by_turn: Dict[str, list[AudioChunk]] = {}
         self._lip_sync_by_turn: Dict[str, list[Dict[str, Any]]] = {}
@@ -236,19 +254,55 @@ class StreamingResponseRuntime:
             cancel_hook=self._cancel_tts_turn,
             id_factory=id_factory,
         )
-        self._tts_worker = IncrementalTTSPlayer(
-            tts,
-            queue_maxsize=cfg.stream_tts_queue_size,
-            temp_parent=temp_parent,
-            player=player,
-            playback_enabled=playback_enabled,
-            on_audio_ready=self._on_audio_ready,
-            on_playback_started=self._on_playback_started,
-            on_playback_finished=self._on_playback_finished,
-            on_error=self._on_tts_error,
-        )
-        self._tts_worker.start()
+        try:
+            self._tts_worker = IncrementalTTSPlayer(
+                self.tts,
+                queue_maxsize=cfg.stream_tts_queue_size,
+                temp_parent=temp_parent,
+                player=player,
+                playback_enabled=playback_enabled,
+                on_audio_ready=self._on_audio_ready,
+                on_playback_started=self._on_playback_started,
+                on_playback_finished=self._on_playback_finished,
+                on_error=self._on_tts_error,
+            )
+        except Exception:
+            # Worker creation failed: release the factory-created resource this
+            # runtime owns, never the caller's shared adapter.
+            self._release_owned_resource()
+            raise
+        try:
+            self._tts_worker.start()
+        except Exception:
+            # Worker start failed after creation: close the worker and the
+            # owned resource, then surface the original failure.
+            try:
+                self._tts_worker.close(drain=False)
+            except Exception:  # noqa: BLE001 - preserve the original error
+                pass
+            self._release_owned_resource()
+            raise
         self._closed = False
+
+    def _owned_resource(self) -> Any | None:
+        owned = self._owned_streaming_resource
+        if owned is not None:
+            return owned
+        if self.tts is self._caller_tts:
+            return None
+        return self.tts
+
+    def _release_owned_resource(self) -> None:
+        owned = self._owned_resource()
+        if owned is None:
+            return
+        close = getattr(owned, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:  # noqa: BLE001 - shutdown must not raise
+                pass
+        self._owned_streaming_resource = None
 
     def begin_turn(self) -> TurnHandle:
         if self._closed:
@@ -286,6 +340,9 @@ class StreamingResponseRuntime:
             min_chars=self.cfg.stream_sentence_min_chars,
             max_chars=self.cfg.stream_sentence_max_chars,
             max_wait_seconds=self.cfg.stream_sentence_max_wait_seconds,
+            prefer_sentence_boundaries=bool(
+                getattr(self.cfg, "stream_natural_boundaries", False)
+            ),
         )
         backpressure_start = self._tts_worker.backpressure_events
         speech_sequence = 0
@@ -421,14 +478,19 @@ class StreamingResponseRuntime:
         return self._tts_worker.backpressure_events
 
     def close(self, *, drain: bool = False) -> None:
-        if self._closed:
+        if self._closed and not self._tts_worker.is_alive:
             return
-        self.cancel_current(reason="runtime_closed")
-        self._tts_worker.close(drain=drain)
-        self._closed = True
-        with self._archive_lock:
-            self._audio_by_turn.clear()
-            self._lip_sync_by_turn.clear()
+        try:
+            self.cancel_current(reason="runtime_closed")
+        finally:
+            try:
+                self._tts_worker.close(drain=drain)
+            finally:
+                self._release_owned_resource()
+                self._closed = True
+                with self._archive_lock:
+                    self._audio_by_turn.clear()
+                    self._lip_sync_by_turn.clear()
 
     def _submit_sentence(self, handle: TurnHandle, sentence: TextChunk) -> None:
         self._raise_if_cancelled(handle)

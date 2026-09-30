@@ -125,6 +125,8 @@ class AppConfig:
     tts_piper_extra_args: str | None = None
     tts_piper_espeak_data: Path | None = None
     tts_piper_use_json_input: bool = False
+    # Reuse one long-lived piper process for streamed sentences (opt-out with 0).
+    tts_piper_persistent: bool = True
 
     # ASR: lightweight mock or local faster-whisper.
     asr_backend: str = "mock"  # mock / faster_whisper
@@ -144,6 +146,9 @@ class AppConfig:
     stream_sentence_min_chars: int = 12
     stream_sentence_max_chars: int = 80
     stream_sentence_max_wait_seconds: float = 0.8
+    # Prefer real sentence boundaries: commas and enumeration marks no longer
+    # reset a sentence, they are only used as bounded fallback breaks.
+    stream_natural_boundaries: bool = True
     stream_asr_partial_interval_seconds: float = 0.8
     stream_barge_in_enabled: bool = False
 
@@ -212,6 +217,7 @@ class AppConfig:
             tts_piper_extra_args=env_text("TTS_PIPER_EXTRA_ARGS"),
             tts_piper_espeak_data=Path(value) if (value := env_text("TTS_PIPER_ESPEAK_DATA")) else None,
             tts_piper_use_json_input=env_bool("TTS_PIPER_USE_JSON_INPUT", False),
+            tts_piper_persistent=env_bool("TTS_PIPER_PERSISTENT", True),
             asr_backend=os.getenv("ASR_BACKEND", "mock"),
             asr_model=env_text("ASR_MODEL", "small"),
             asr_device=env_text("ASR_DEVICE", "cpu"),
@@ -237,6 +243,7 @@ class AppConfig:
             stream_sentence_max_wait_seconds=env_bounded_float(
                 "STREAM_SENTENCE_MAX_WAIT_SECONDS", 0.8, 0.01, 60.0
             ),
+            stream_natural_boundaries=env_bool("STREAM_NATURAL_BOUNDARIES", True),
             stream_asr_partial_interval_seconds=env_bounded_float(
                 "STREAM_ASR_PARTIAL_INTERVAL_SECONDS", 0.8, 0.05, 60.0
             ),

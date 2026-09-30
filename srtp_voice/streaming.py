@@ -218,7 +218,12 @@ class TurnTiming:
         self._last_timestamp = event.timestamp
         mark = _TIMING_MARKS.get(event.event_type)
         if mark is not None:
-            self._marks.setdefault(mark, event.timestamp)
+            if mark == "playback_finished":
+                # Multi-sentence playback must end at the LAST finished chunk,
+                # while playback_started keeps the earliest occurrence.
+                self._marks[mark] = event.timestamp
+            else:
+                self._marks.setdefault(mark, event.timestamp)
 
     def snapshot(self) -> TurnTimingSnapshot:
         marks = dict(self._marks)
@@ -323,7 +328,45 @@ class LatencyTracker:
 
 
 _SENTENCE_HARD_PUNCTUATION = frozenset("。！？；….!?;")
+# Natural mode keeps the same hard set: enumeration marks and colons that
+# introduce a list are soft boundaries and are only used by the bounded
+# timeout/length fallback, so a list keeps its prosody.
+_SENTENCE_STRONG_PUNCTUATION = _SENTENCE_HARD_PUNCTUATION
 _SENTENCE_SOFT_PUNCTUATION = frozenset("：，、,:")
+_ABBREVIATIONS = frozenset(
+    {"mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "no", "vs", "etc", "e.g", "i.e"}
+)
+
+
+def _protected_point(text: str, index: int) -> bool:
+    """True when the period at ``index`` is not a sentence boundary.
+
+    Covers decimals (``3.14``), version-like model names (``v1.2``), English
+    abbreviations (``e.g.``, ``Dr.``) and short initials, so a
+    terminator is never synthesized as its own chunk.
+    """
+
+    if not (0 <= index < len(text)) or text[index] != ".":
+        return False
+    previous = text[index - 1] if index > 0 else ""
+    following = text[index + 1] if index + 1 < len(text) else ""
+    if following.isdigit():
+        return True
+    if previous.isdigit():
+        return True
+    start = index - 1
+    while start >= 0 and (
+        (text[start].isascii() and text[start].isalnum()) or text[start] == "."
+    ):
+        start -= 1
+    token = text[start + 1 : index].strip(".").lower()
+    if token and token in _ABBREVIATIONS:
+        return True
+    if len(token) == 1 and token.isascii() and token.isalpha():
+        return True  # Initials and the first dot in a cross-token e.g./i.e.
+    if token and len(token) <= 2 and token.isalpha() and following.isalpha():
+        return True
+    return False
 _SENTENCE_PUNCTUATION = _SENTENCE_HARD_PUNCTUATION | _SENTENCE_SOFT_PUNCTUATION
 _SENTENCE_CLOSERS = frozenset("”’\"'）)]】}》〉」』")
 
@@ -344,6 +387,7 @@ class SentenceChunker:
         min_chars: int = 1,
         max_chars: int = 80,
         max_wait_seconds: float = 0.8,
+        prefer_sentence_boundaries: bool = False,
         clock: Callable[[], float] | None = None,
     ) -> None:
         if isinstance(min_chars, bool) or not isinstance(min_chars, int):
@@ -360,10 +404,18 @@ class SentenceChunker:
             raise TypeError("max_wait_seconds must be numeric")
         if not isfinite(max_wait_seconds) or max_wait_seconds <= 0:
             raise ValueError("max_wait_seconds must be finite and greater than zero")
+        if not isinstance(prefer_sentence_boundaries, bool):
+            raise TypeError("prefer_sentence_boundaries must be a boolean")
         self.turn_id = turn_id
         self.min_chars = min_chars
         self.max_chars = max_chars
         self.max_wait_seconds = float(max_wait_seconds)
+        self.prefer_sentence_boundaries = prefer_sentence_boundaries
+        self._hard_punctuation = (
+            _SENTENCE_STRONG_PUNCTUATION
+            if self.prefer_sentence_boundaries
+            else _SENTENCE_HARD_PUNCTUATION
+        )
         self._clock = clock or monotonic
         self._buffer: list[str] = []
         self._buffer_started_at: float | None = None
@@ -378,24 +430,37 @@ class SentenceChunker:
         timestamp = self._now(now)
         chunks = self._flush_due_at(timestamp)
 
-        for character in text:
-            if (
-                self._pending_boundary
-                and character not in _SENTENCE_CLOSERS
-                and character not in _SENTENCE_PUNCTUATION
-            ):
-                chunks.append(self._emit(timestamp))
+        combined = "".join(self._buffer) + text
+        base = len(self._buffer)
+        for offset, character in enumerate(text):
+            index = base + offset
+            protected = character == "." and _protected_point(combined, index)
+            if self._pending_boundary:
+                if character in _SENTENCE_CLOSERS or character in _SENTENCE_PUNCTUATION:
+                    pass
+                else:
+                    chunks.append(self._emit(timestamp))
 
             if not self._buffer:
                 self._buffer_started_at = timestamp
             self._buffer.append(character)
 
-            if character in _SENTENCE_HARD_PUNCTUATION:
+            if protected:
+                # A decimal or abbreviation period never becomes a boundary.
+                self._pending_boundary = False
+                self._pending_hard_boundary = False
+            elif character in self._hard_punctuation:
                 self._pending_boundary = True
                 self._pending_hard_boundary = True
             elif character in _SENTENCE_SOFT_PUNCTUATION:
-                self._pending_boundary = self._speakable_count() >= self.min_chars
-                self._pending_hard_boundary = False
+                if self.prefer_sentence_boundaries:
+                    # Enumeration and comma marks keep the sentence going;
+                    # they are only used as a fallback break below.
+                    self._pending_boundary = False
+                    self._pending_hard_boundary = False
+                else:
+                    self._pending_boundary = self._speakable_count() >= self.min_chars
+                    self._pending_hard_boundary = False
             elif self._pending_boundary and character in _SENTENCE_CLOSERS:
                 pass
             else:
@@ -403,9 +468,17 @@ class SentenceChunker:
                 self._pending_hard_boundary = False
 
             if len(self._buffer) >= self.max_chars and not self._pending_boundary:
-                chunks.append(self._emit(timestamp))
+                if self.prefer_sentence_boundaries:
+                    chunks.extend(self._emit_natural_max(timestamp))
+                else:
+                    chunks.append(self._emit(timestamp))
 
         return chunks
+
+    def _emit_natural_max(self, timestamp: float) -> list[TextChunk]:
+        """Prefer a complete clause/word when a hard length bound is reached."""
+
+        return [self._emit(timestamp, keep=self._word_boundary_split())]
 
     def flush_due(self, *, now: float | None = None) -> list[TextChunk]:
         return self._flush_due_at(self._now(now))
@@ -430,8 +503,12 @@ class SentenceChunker:
             or self._last_now is None
         ):
             return None
+        buffered = "".join(self._buffer)
+        if buffered.endswith(".") and _protected_point(buffered, len(buffered) - 1):
+            # "3." at a token edge is not yet a decided sentence end.
+            return None
         return TextChunk(
-            text="".join(self._buffer),
+            text=buffered,
             timestamp_ms=int(self._last_now * 1000),
             turn_id=self.turn_id,
             sequence_id=self._next_sequence,
@@ -445,11 +522,44 @@ class SentenceChunker:
             and self._speakable_count() >= self.min_chars
             and not self._pending_hard_boundary
         ):
-            return [self._emit(timestamp)]
+            split = None
+            if self.prefer_sentence_boundaries:
+                # Never emit a partial English word on the wait deadline.
+                split = self._word_boundary_split()
+            return [self._emit(timestamp, keep=split)]
         return []
 
-    def _emit(self, timestamp: float, *, is_final: bool = False) -> TextChunk:
-        text = "".join(self._buffer)
+    def _word_boundary_split(self) -> int | None:
+        """Last complete clause/word with enough content; avoid tiny fragments.
+
+        Enumeration marks are not breakpoints: they belong to the list. When
+        no safe boundary exists, the configured deadline/length still wins.
+        """
+
+        buffer = self._buffer
+        for position in range(len(buffer) - 1, 0, -1):
+            if (
+                buffer[position - 1] in "，：,: \t\n"
+                and sum(character.isalnum() for character in buffer[:position]) >= self.min_chars
+            ):
+                return position
+        return None
+
+    def _emit(
+        self,
+        timestamp: float,
+        *,
+        is_final: bool = False,
+        keep: int | None = None,
+    ) -> TextChunk:
+        if keep is None:
+            text = "".join(self._buffer)
+            remainder: list[str] = []
+        else:
+            if keep <= 0 or keep > len(self._buffer):
+                raise ValueError("keep must select a non-empty prefix of the buffer")
+            text = "".join(self._buffer[:keep])
+            remainder = list(self._buffer[keep:])
         if not text:
             raise RuntimeError("Cannot emit an empty sentence chunk")
         chunk = TextChunk(
@@ -461,7 +571,9 @@ class SentenceChunker:
         )
         self._next_sequence += 1
         self._buffer.clear()
-        self._buffer_started_at = None
+        if remainder:
+            self._buffer.extend(remainder)
+        self._buffer_started_at = timestamp if remainder else None
         self._pending_boundary = False
         self._pending_hard_boundary = False
         return chunk

@@ -70,6 +70,12 @@ CONFIG_KEYS: tuple[str, ...] = (
     "frame_ms",
     "silence_ms",
     "max_record_seconds",
+    "tts_piper_persistent",
+    "stream_natural_boundaries",
+    "stream_tts_queue_size",
+    "stream_sentence_min_chars",
+    "stream_sentence_max_chars",
+    "stream_sentence_max_wait_seconds",
 )
 
 _SAFE_TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")

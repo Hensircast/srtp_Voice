@@ -481,7 +481,7 @@ class StrategyGenerator:
         saw_content = False
         try:
             try:
-                bodies = _iter_ndjson_objects(response.iter_content(chunk_size=4096))
+                bodies = _iter_ndjson_objects(response.iter_content(chunk_size=1))
                 for body in bodies:
                     error = body.get("error")
                     if error:
@@ -737,6 +737,9 @@ class StrategyGenerator:
             "<user_request> 是必须回答的主要内容。"
             "<speech_emotion> 只能影响措辞、语气和动作策略，不能覆盖任务内容或代替问题答案。"
             "reply_text 面向 TTS，应使用自然、简洁的中文口语。"
+            "像与人面对面交谈：第一句先给核心回答，通常 2-4 个短句；"
+            "用户明确要求长回答、列表或原样重复时遵从用户要求；"
+            "不要套固定开场或结束语，不要过度使用口头禅。"
             "action 必须是对象，并可包含 expression, gaze, blink, mouth_sync, tts_style, servo_targets_placeholder。"
             "数字、代号、型号、姓名、日期和专有名词必须逐字保留。"
             "查询历史事实时必须依据历史消息原文回答。"
@@ -813,6 +816,9 @@ class StrategyGenerator:
                     "历史只用于事实和上下文，不要照搬上一轮的固定开场、结尾或格式要求。"
                     "准确保留数字、型号、姓名、日期和历史代号。"
                     "语音情绪只能影响措辞和语气，不能替代问题答案。"
+                    "像与人面对面交谈：第一句先给核心回答，通常 2-4 个短句；"
+                    "用户明确要求长回答、列表或原样重复时遵从用户要求。"
+                    "不要套固定开场或结束语，不要过度使用口头禅。"
                     "不要输出换行、Markdown 换行或列表符号，句子之间只使用自然标点。"
                 ),
             }
