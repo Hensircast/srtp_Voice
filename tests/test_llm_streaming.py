@@ -39,7 +39,9 @@ class FakeResponse:
         return self._data
 
     def iter_content(self, chunk_size):
-        assert chunk_size == 4096
+        # The streaming reader uses the smallest possible read so the first
+        # token is not buffered behind the rest of the response.
+        assert chunk_size == 1
         for chunk in self._chunks:
             if isinstance(chunk, BaseException):
                 raise chunk

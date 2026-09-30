@@ -30,6 +30,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable, Mapping, Sequence
 
 from srtp_voice.config import AppConfig
+from srtp_voice.streaming import sanitize_llm_diagnostics
 
 from .workbench import (
     PathEscapeError,
@@ -70,7 +71,20 @@ CONFIG_KEYS: tuple[str, ...] = (
     "frame_ms",
     "silence_ms",
     "max_record_seconds",
+    "tts_piper_persistent",
+    "stream_natural_boundaries",
+    "stream_tts_warmup",
+    "stream_asr_in_memory",
+    "stream_llm_reuse_connections",
+    "stream_tts_queue_size",
+    "stream_sentence_min_chars",
+    "stream_sentence_max_chars",
+    "stream_sentence_max_wait_seconds",
 )
+
+# Export a transport-neutral name; keep the existing strict URL redaction
+# contract while still including this tuning option in provenance/fingerprints.
+CONFIG_ATTRIBUTES = {"stream_llm_reuse_connections": "stream_llm_reuse_http"}
 
 _SAFE_TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _SAFE_MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,95}(?::[A-Za-z0-9][A-Za-z0-9._-]{0,63})?$")
@@ -206,8 +220,20 @@ def _sanitize_turn(
             latencies[key] = _require_non_negative(
                 value, f"turns[{index}].latencies_ms.{key}"
             )
+    cleaned_turn: dict[str, Any] = {
+        "turn_id": turn_id,
+        "marks": marks,
+        "latencies_ms": latencies,
+    }
+    raw_diagnostics = turn.get("backend_diagnostics")
+    if raw_diagnostics is not None:
+        # Same whitelist as the runtime: only the seven numeric server fields
+        # survive, so no model name, url, prompt or reply text can be exported.
+        safe_diagnostics = sanitize_llm_diagnostics(raw_diagnostics)
+        if safe_diagnostics:
+            cleaned_turn["backend_diagnostics"] = safe_diagnostics
     return (
-        {"turn_id": turn_id, "marks": marks, "latencies_ms": latencies},
+        cleaned_turn,
         ignored_marks + ignored_latencies,
         int(renamed),
     )
@@ -258,7 +284,10 @@ def _safe_config_value(value: Any) -> Any:
 
 
 def _config_view(cfg: AppConfig) -> dict[str, Any]:
-    return {key: _safe_config_value(getattr(cfg, key, None)) for key in CONFIG_KEYS}
+    return {
+        key: _safe_config_value(getattr(cfg, CONFIG_ATTRIBUTES.get(key, key), None))
+        for key in CONFIG_KEYS
+    }
 
 
 def _fingerprint(config_view: Mapping[str, Any]) -> str:

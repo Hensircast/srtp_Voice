@@ -27,6 +27,15 @@ def env_text(name: str, default: str | None = None) -> str | None:
     return stripped if stripped else default
 
 
+def env_warmup_enabled() -> bool:
+    value = os.getenv("STREAM_TTS_WARMUP")
+    if value is not None and value.strip().lower() not in {
+        "1", "true", "yes", "on", "0", "false", "no", "off"
+    }:
+        raise ValueError("STREAM_TTS_WARMUP must be a boolean")
+    return env_bool("STREAM_TTS_WARMUP", False)
+
+
 def env_bounded_float(
     name: str,
     default: float,
@@ -125,6 +134,8 @@ class AppConfig:
     tts_piper_extra_args: str | None = None
     tts_piper_espeak_data: Path | None = None
     tts_piper_use_json_input: bool = False
+    # Reuse one long-lived piper process for streamed sentences (opt-out with 0).
+    tts_piper_persistent: bool = True
 
     # ASR: lightweight mock or local faster-whisper.
     asr_backend: str = "mock"  # mock / faster_whisper
@@ -137,6 +148,10 @@ class AppConfig:
     asr_vad_filter: bool = True
     asr_min_silence_ms: int = 500
     asr_condition_on_previous_text: bool = False
+    # Stream PCM16 snapshots directly into the ASR model (no temporary WAV).
+    stream_asr_in_memory: bool = True
+    # Reuse one private HTTP session for streaming Ollama requests.
+    stream_llm_reuse_http: bool = True
 
     # V1.8 streaming is opt-in at the CLI; these bound callback and worker queues.
     stream_audio_queue_size: int = 32
@@ -144,6 +159,11 @@ class AppConfig:
     stream_sentence_min_chars: int = 12
     stream_sentence_max_chars: int = 80
     stream_sentence_max_wait_seconds: float = 0.8
+    # Prefer real sentence boundaries: commas and enumeration marks no longer
+    # reset a sentence, they are only used as bounded fallback breaks.
+    stream_natural_boundaries: bool = True
+    # Optional streaming Piper warmup before the first Listening turn.
+    stream_tts_warmup: bool = False
     stream_asr_partial_interval_seconds: float = 0.8
     stream_barge_in_enabled: bool = False
 
@@ -212,6 +232,7 @@ class AppConfig:
             tts_piper_extra_args=env_text("TTS_PIPER_EXTRA_ARGS"),
             tts_piper_espeak_data=Path(value) if (value := env_text("TTS_PIPER_ESPEAK_DATA")) else None,
             tts_piper_use_json_input=env_bool("TTS_PIPER_USE_JSON_INPUT", False),
+            tts_piper_persistent=env_bool("TTS_PIPER_PERSISTENT", True),
             asr_backend=os.getenv("ASR_BACKEND", "mock"),
             asr_model=env_text("ASR_MODEL", "small"),
             asr_device=env_text("ASR_DEVICE", "cpu"),
@@ -222,6 +243,8 @@ class AppConfig:
             asr_vad_filter=env_bool("ASR_VAD_FILTER", True),
             asr_min_silence_ms=max(1, int(os.getenv("ASR_MIN_SILENCE_MS", "500"))),
             asr_condition_on_previous_text=env_bool("ASR_CONDITION_ON_PREVIOUS_TEXT", False),
+            stream_asr_in_memory=env_bool("STREAM_ASR_IN_MEMORY", True),
+            stream_llm_reuse_http=env_bool("STREAM_LLM_REUSE_HTTP", True),
             stream_audio_queue_size=env_bounded_int(
                 "STREAM_AUDIO_QUEUE_SIZE", 32, 1, 4096
             ),
@@ -237,6 +260,8 @@ class AppConfig:
             stream_sentence_max_wait_seconds=env_bounded_float(
                 "STREAM_SENTENCE_MAX_WAIT_SECONDS", 0.8, 0.01, 60.0
             ),
+            stream_natural_boundaries=env_bool("STREAM_NATURAL_BOUNDARIES", True),
+            stream_tts_warmup=env_warmup_enabled(),
             stream_asr_partial_interval_seconds=env_bounded_float(
                 "STREAM_ASR_PARTIAL_INTERVAL_SECONDS", 0.8, 0.05, 60.0
             ),

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import Callable
 
 from srtp_voice.audio_io import (
     NoSpeechDetectedError,
@@ -395,6 +396,60 @@ def run_one_streaming_turn(
         raise
 
 
+def _initialize_streaming_runtime(
+    cfg: AppConfig,
+    generator: StrategyGenerator,
+    tts: TTSAdapter,
+    *,
+    playback_enabled: bool,
+    event_sink: Callable[[StreamEvent], None] | None = None,
+) -> StreamingResponseRuntime:
+    """Create the streaming runtime before the first Listening turn."""
+
+    return StreamingResponseRuntime(
+        cfg,
+        generator,
+        tts,
+        event_sink=event_sink,
+        playback_enabled=playback_enabled,
+        temp_parent=cfg.output_dir,
+    )
+
+
+def _maybe_warmup_streaming(cfg: AppConfig, runtime: object) -> None:
+    """Run optional warmup before listening; failure is reported but nonfatal."""
+
+    if runtime is None or not cfg.stream_tts_warmup:
+        return
+    warmup = getattr(runtime, "warmup_tts", None)
+    if not callable(warmup):
+        return
+    try:
+        warmed = warmup()
+    except Exception as exc:  # noqa: BLE001 - warmup is optional
+        print(f"      [WARMUP] 跳过预热：{type(exc).__name__}")
+    else:
+        print(f"      [WARMUP] streaming piper warmup={'ok' if warmed else 'skipped'}")
+
+
+def _maybe_enable_llm_http_reuse(
+    cfg: AppConfig,
+    generator: object,
+    *,
+    streaming: bool,
+) -> bool:
+    """Enable pooled streaming HTTP only for opt-in streaming Ollama runs."""
+
+    if not streaming or not getattr(cfg, "stream_llm_reuse_http", False):
+        return False
+    if getattr(cfg, "llm_backend", "").lower() != "ollama":
+        return False
+    enable = getattr(generator, "enable_http_reuse", None)
+    if not callable(enable):
+        return False
+    return bool(enable())
+
+
 def main() -> None:
     args = parse_args()
     if bool(getattr(args, "diagnose", False)):
@@ -428,6 +483,7 @@ def main() -> None:
     fsm.set(DialogueStage.IDLE)
 
     streaming_runtime: StreamingResponseRuntime | None = None
+    generator: StrategyGenerator | None = None
     try:
         ser = SpeechEmotionRecognizer(cfg)
         if cfg.ser_backend.strip().lower() == "sensevoice":
@@ -441,6 +497,7 @@ def main() -> None:
         needs_asr = not args.text and args.mode in {"mic", "vad", "file"}
         asr = ASRAdapter(cfg) if needs_asr else None
         generator = StrategyGenerator(cfg)
+        _maybe_enable_llm_http_reuse(cfg, generator, streaming=streaming)
         tts = TTSAdapter(cfg)
         smoother = EmotionStateSmoother(
             cfg.state_file,
@@ -457,13 +514,12 @@ def main() -> None:
                 elif event.event_type == StreamEventType.ASR_PARTIAL:
                     print(f"      [ASR partial] {event.payload.get('text', '')}")
 
-            streaming_runtime = StreamingResponseRuntime(
+            streaming_runtime = _initialize_streaming_runtime(
                 cfg,
                 generator,
                 tts,
                 event_sink=stream_event_sink,
                 playback_enabled=not args.no_play,
-                temp_parent=cfg.output_dir,
             )
             print(
                 "[CONFIG] V1.8 streaming=enabled, "
@@ -473,6 +529,7 @@ def main() -> None:
             )
 
         turn_number = 1
+        _maybe_warmup_streaming(cfg, streaming_runtime if streaming else None)
         while True:
             print(f"[TURN {turn_number}] 开始监听")
             if streaming:
@@ -540,8 +597,16 @@ def main() -> None:
         save_fsm_state(fsm, state_file)
         print("\n已收到 Ctrl+C，状态机已回到 Idle，程序正常退出")
     finally:
-        if streaming_runtime is not None:
-            streaming_runtime.close(drain=False)
+        try:
+            if streaming_runtime is not None:
+                streaming_runtime.close(drain=False)
+        finally:
+            # main owns this generator; the runtime only borrows it. Its own
+            # failure must never stop the pooled session from being released.
+            if generator is not None:
+                close_generator = getattr(generator, "close", None)
+                if callable(close_generator):
+                    close_generator()
 
 
 if __name__ == "__main__":

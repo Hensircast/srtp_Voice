@@ -29,6 +29,9 @@ class TextChunk:
     session_id: str = ""
     turn_id: str = ""
     sequence_id: int = 0
+    # Local, numeric-only diagnostics (for example the server-side timings of
+    # one LLM request). Never part of the TTS/LLM text input.
+    diagnostics: Dict[str, Any] = field(default_factory=dict)
 
 
 class AudioInputStream(Protocol):
@@ -67,6 +70,7 @@ class StreamEventType(str, Enum):
     ASR_FINAL = "asr_final"
     LLM_REQUEST_STARTED = "llm_request_started"
     LLM_TOKEN = "llm_token"
+    LLM_DIAGNOSTICS = "llm_diagnostics"
     SENTENCE_READY = "sentence_ready"
     TTS_STARTED = "tts_started"
     AUDIO_CHUNK_READY = "audio_chunk_ready"
@@ -180,18 +184,97 @@ _TIMING_MARKS = {
 }
 
 
+_DIAGNOSTICS_DURATION_FIELDS = (
+    "server_total_ms",
+    "model_load_ms",
+    "input_processing_ms",
+    "generation_ms",
+)
+_DIAGNOSTICS_COUNT_FIELDS = (
+    "input_tokens",
+    "input_cached_tokens",
+    "output_tokens",
+)
+_DIAGNOSTICS_MAX_ENTRIES = 4
+_DIAGNOSTICS_DURATION_MAX = (2**63 - 1) / 1e6
+_DIAGNOSTICS_COUNT_MAX = 2**63 - 1
+
+
+def _sanitize_diagnostics_number(value: Any, *, count: bool) -> Any:
+    """Return a clean whitelisted number, or None when it must be dropped."""
+
+    if isinstance(value, bool):
+        return None
+    if count:
+        if not isinstance(value, int):
+            return None
+        return value if 0 <= value <= _DIAGNOSTICS_COUNT_MAX else None
+    if not isinstance(value, (int, float)):
+        return None
+    # Range-check before isfinite so a huge int cannot raise OverflowError.
+    if value < 0 or value > _DIAGNOSTICS_DURATION_MAX:
+        return None
+    return float(value) if isfinite(value) else None
+
+
+def sanitize_llm_diagnostics(payload: Any) -> Dict[str, Any]:
+    """Copy only the seven whitelisted numeric server-timing fields.
+
+    Accepts a mapping whose ``llm_server_requests`` is a list/tuple, inspecting
+    at most the first four entries and never iterating an unbounded iterable.
+    Unknown keys, private text and malformed values are dropped rather than
+    coerced, and every kept entry is a fresh dict/list copy. Returns ``{}`` when
+    nothing valid remains.
+    """
+
+    if not isinstance(payload, Mapping):
+        return {}
+    raw_requests = payload.get("llm_server_requests")
+    if not isinstance(raw_requests, (list, tuple)):
+        return {}
+    cleaned: list[Dict[str, Any]] = []
+    # Slice first: a bounded sequence is never fully iterated.
+    for item in raw_requests[:4]:
+        if not isinstance(item, Mapping):
+            continue
+        entry: Dict[str, Any] = {}
+        for field in _DIAGNOSTICS_DURATION_FIELDS:
+            if field not in item:
+                continue
+            value = _sanitize_diagnostics_number(item[field], count=False)
+            if value is not None:
+                entry[field] = value
+        for field in _DIAGNOSTICS_COUNT_FIELDS:
+            if field not in item:
+                continue
+            value = _sanitize_diagnostics_number(item[field], count=True)
+            if value is not None:
+                entry[field] = value
+        if entry:
+            cleaned.append(entry)
+    if not cleaned:
+        return {}
+    return {"llm_server_requests": cleaned}
+
+
 @dataclass(frozen=True)
 class TurnTimingSnapshot:
     turn_id: str
     marks: Mapping[str, float]
     latencies_ms: Mapping[str, float]
+    # Optional: server-reported backend timings, kept out of latencies_ms.
+    backend_diagnostics: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        payload: Dict[str, Any] = {
             "turn_id": self.turn_id,
             "marks": dict(self.marks),
             "latencies_ms": dict(self.latencies_ms),
         }
+        cleaned = sanitize_llm_diagnostics(self.backend_diagnostics)
+        if cleaned:
+            payload["backend_diagnostics"] = cleaned
+        return payload
 
 
 class TurnTiming:
@@ -204,6 +287,7 @@ class TurnTiming:
         self._marks: Dict[str, float] = {}
         self._last_sequence = -1
         self._last_timestamp: float | None = None
+        self._backend_diagnostics: Dict[str, Any] = {}
 
     def observe(self, event: StreamEvent) -> None:
         if event.turn_id != self.turn_id:
@@ -217,8 +301,21 @@ class TurnTiming:
         self._last_sequence = event.sequence
         self._last_timestamp = event.timestamp
         mark = _TIMING_MARKS.get(event.event_type)
+        if event.event_type is StreamEventType.LLM_DIAGNOSTICS:
+            # Only the first valid report of this turn is kept, and it never
+            # contributes to the latency marks.
+            if not self._backend_diagnostics:
+                cleaned = sanitize_llm_diagnostics(event.payload)
+                if cleaned:
+                    self._backend_diagnostics = cleaned
+            return
         if mark is not None:
-            self._marks.setdefault(mark, event.timestamp)
+            if mark == "playback_finished":
+                # Multi-sentence playback must end at the LAST finished chunk,
+                # while playback_started keeps the earliest occurrence.
+                self._marks[mark] = event.timestamp
+            else:
+                self._marks.setdefault(mark, event.timestamp)
 
     def snapshot(self) -> TurnTimingSnapshot:
         marks = dict(self._marks)
@@ -249,7 +346,14 @@ class TurnTiming:
             add("turn_total_ms", "turn_started", "playback_finished")
         elif "turn_cancelled" in marks:
             add("turn_total_ms", "turn_started", "turn_cancelled")
-        return TurnTimingSnapshot(self.turn_id, marks, latencies)
+        return TurnTimingSnapshot(
+            self.turn_id,
+            marks,
+            latencies,
+            # A deep, cleaned copy: neither this snapshot nor a later one can be
+            # mutated through the other.
+            sanitize_llm_diagnostics(self._backend_diagnostics),
+        )
 
 
 def _percentile(values: list[float], percentile: float) -> float:
@@ -323,7 +427,72 @@ class LatencyTracker:
 
 
 _SENTENCE_HARD_PUNCTUATION = frozenset("。！？；….!?;")
+# Natural mode keeps the same hard set: enumeration marks and colons that
+# introduce a list are soft boundaries and are only used by the bounded
+# timeout/length fallback, so a list keeps its prosody.
+_SENTENCE_STRONG_PUNCTUATION = _SENTENCE_HARD_PUNCTUATION
 _SENTENCE_SOFT_PUNCTUATION = frozenset("：，、,:")
+_ABBREVIATIONS = frozenset(
+    {"mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "no", "vs", "etc", "e.g", "i.e"}
+)
+
+
+def _protected_point(text: str, index: int) -> bool | None:
+    """Classify a period: True=continuation, False=sentence end, None=unknown.
+
+    An abbreviation can also end a sentence. Retain only genuinely ambiguous
+    periods until lookahead arrives; whitespace alone does not resolve them.
+    English initials/names and inline abbreviations remain conservative
+    heuristics, not a semantic sentence parser.
+    """
+
+    if not (0 <= index < len(text)) or text[index] != ".":
+        return False
+    previous = text[index - 1] if index > 0 else ""
+    following = text[index + 1] if index + 1 < len(text) else ""
+    if following.isdigit():
+        return True
+    if previous.isdigit():
+        return False if following else None
+
+    start = index - 1
+    while start >= 0 and (
+        (text[start].isascii() and text[start].isalnum()) or text[start] == "."
+    ):
+        start -= 1
+    token = text[start + 1 : index].strip(".").lower()
+    initial = len(token) == 1 and token.isascii() and token.isalpha()
+    groups = token.split(".")
+    initialism = len(groups) >= 2 and all(
+        len(group) == 1 and group.isascii() and group.isalpha()
+        for group in groups
+    )
+    if token not in _ABBREVIATIONS and not initial and not initialism:
+        return bool(
+            token and len(token) <= 2 and token.isalpha()
+            and following.isascii() and following.isalpha()
+        )
+
+    lookahead = text[index + 1 :].lstrip()
+    if not lookahead:
+        return None
+    next_character = lookahead[0]
+    if next_character in _SENTENCE_CLOSERS or next_character in _SENTENCE_HARD_PUNCTUATION:
+        return False
+    if token == "etc":
+        return next_character.isascii() and next_character.isalpha() and next_character.islower()
+    if token in _ABBREVIATIONS:
+        return True
+    if initialism:
+        return next_character.isascii() and next_character.isalpha()
+    if following.isascii() and following.isalpha():
+        return True  # Cross-token e.g./i.e./U.S. without intervening space.
+    before_token = text[start] if start >= 0 else ""
+    if before_token.isalpha() and not before_token.isascii():
+        return False  # CJK answer labels are not English name initials.
+    return next_character.isascii() and next_character.isalpha() and next_character.isupper()
+
+
 _SENTENCE_PUNCTUATION = _SENTENCE_HARD_PUNCTUATION | _SENTENCE_SOFT_PUNCTUATION
 _SENTENCE_CLOSERS = frozenset("”’\"'）)]】}》〉」』")
 
@@ -344,6 +513,7 @@ class SentenceChunker:
         min_chars: int = 1,
         max_chars: int = 80,
         max_wait_seconds: float = 0.8,
+        prefer_sentence_boundaries: bool = False,
         clock: Callable[[], float] | None = None,
     ) -> None:
         if isinstance(min_chars, bool) or not isinstance(min_chars, int):
@@ -360,42 +530,93 @@ class SentenceChunker:
             raise TypeError("max_wait_seconds must be numeric")
         if not isfinite(max_wait_seconds) or max_wait_seconds <= 0:
             raise ValueError("max_wait_seconds must be finite and greater than zero")
+        if not isinstance(prefer_sentence_boundaries, bool):
+            raise TypeError("prefer_sentence_boundaries must be a boolean")
         self.turn_id = turn_id
         self.min_chars = min_chars
         self.max_chars = max_chars
         self.max_wait_seconds = float(max_wait_seconds)
+        self.prefer_sentence_boundaries = prefer_sentence_boundaries
+        self._hard_punctuation = (
+            _SENTENCE_STRONG_PUNCTUATION
+            if self.prefer_sentence_boundaries
+            else _SENTENCE_HARD_PUNCTUATION
+        )
         self._clock = clock or monotonic
         self._buffer: list[str] = []
         self._buffer_started_at: float | None = None
         self._last_now: float | None = None
         self._pending_boundary = False
         self._pending_hard_boundary = False
+        # Original buffer position of a period still awaiting lookahead.
+        # An integer (including zero) also survives whitespace-only tokens.
+        self._candidate_period: int | None = None
         self._next_sequence = 0
 
     def feed(self, text: str, *, now: float | None = None) -> list[TextChunk]:
         if not isinstance(text, str):
             raise TypeError("SentenceChunker.feed requires text")
         timestamp = self._now(now)
-        chunks = self._flush_due_at(timestamp)
+        # Incorporate slow lookahead before timeout can cut a true abbreviation
+        # or decimal. One predicate judges both whole-token and cross-token text.
+        if self._candidate_period is not None:
+            position = self._candidate_period
+            state = _protected_point("".join(self._buffer) + text, position)
+            chunks: list[TextChunk] = []
+            if state is not None:
+                self._candidate_period = None
+                self._pending_boundary = state is False
+                self._pending_hard_boundary = self._pending_boundary
+                if self._pending_boundary and position + 1 < len(self._buffer):
+                    end = position + 1
+                    while end < len(self._buffer) and self._buffer[end] in _SENTENCE_CLOSERS:
+                        end += 1
+                    if end < len(self._buffer):
+                        # Spaces already buffered belong to the next sentence,
+                        # not to the candidate sentence delivered to TTS.
+                        chunks.append(self._emit(timestamp, keep=end))
+        else:
+            chunks = self._flush_due_at(timestamp)
 
-        for character in text:
-            if (
-                self._pending_boundary
-                and character not in _SENTENCE_CLOSERS
-                and character not in _SENTENCE_PUNCTUATION
-            ):
-                chunks.append(self._emit(timestamp))
+        combined = "".join(self._buffer) + text
+        base = len(self._buffer)
+        for offset, character in enumerate(text):
+            index = base + offset
+            period_state = (
+                _protected_point(combined, index) if character == "." else False
+            )
+            candidate = character == "." and period_state is None
+            protected = character == "." and period_state is True
+            if self._pending_boundary:
+                if character in _SENTENCE_CLOSERS or character in _SENTENCE_PUNCTUATION:
+                    pass
+                else:
+                    chunks.append(self._emit(timestamp))
 
             if not self._buffer:
                 self._buffer_started_at = timestamp
             self._buffer.append(character)
 
-            if character in _SENTENCE_HARD_PUNCTUATION:
+            if candidate:
+                self._candidate_period = len(self._buffer) - 1
+                self._pending_boundary = False
+                self._pending_hard_boundary = False
+            elif protected:
+                # Context confirms a decimal, abbreviation or name continuation.
+                self._pending_boundary = False
+                self._pending_hard_boundary = False
+            elif character in self._hard_punctuation:
                 self._pending_boundary = True
                 self._pending_hard_boundary = True
             elif character in _SENTENCE_SOFT_PUNCTUATION:
-                self._pending_boundary = self._speakable_count() >= self.min_chars
-                self._pending_hard_boundary = False
+                if self.prefer_sentence_boundaries:
+                    # Enumeration and comma marks keep the sentence going;
+                    # they are only used as a fallback break below.
+                    self._pending_boundary = False
+                    self._pending_hard_boundary = False
+                else:
+                    self._pending_boundary = self._speakable_count() >= self.min_chars
+                    self._pending_hard_boundary = False
             elif self._pending_boundary and character in _SENTENCE_CLOSERS:
                 pass
             else:
@@ -403,9 +624,17 @@ class SentenceChunker:
                 self._pending_hard_boundary = False
 
             if len(self._buffer) >= self.max_chars and not self._pending_boundary:
-                chunks.append(self._emit(timestamp))
+                if self.prefer_sentence_boundaries:
+                    chunks.extend(self._emit_natural_max(timestamp))
+                else:
+                    chunks.append(self._emit(timestamp))
 
         return chunks
+
+    def _emit_natural_max(self, timestamp: float) -> list[TextChunk]:
+        """Prefer a complete clause/word when a hard length bound is reached."""
+
+        return [self._emit(timestamp, keep=self._word_boundary_split())]
 
     def flush_due(self, *, now: float | None = None) -> list[TextChunk]:
         return self._flush_due_at(self._now(now))
@@ -430,8 +659,12 @@ class SentenceChunker:
             or self._last_now is None
         ):
             return None
+        buffered = "".join(self._buffer)
+        if self._candidate_period is not None:
+            # Do not re-judge already-decided boundaries without their lookahead.
+            return None
         return TextChunk(
-            text="".join(self._buffer),
+            text=buffered,
             timestamp_ms=int(self._last_now * 1000),
             turn_id=self.turn_id,
             sequence_id=self._next_sequence,
@@ -444,12 +677,46 @@ class SentenceChunker:
             and timestamp - self._buffer_started_at >= self.max_wait_seconds
             and self._speakable_count() >= self.min_chars
             and not self._pending_hard_boundary
+            and self._candidate_period is None
         ):
-            return [self._emit(timestamp)]
+            split = None
+            if self.prefer_sentence_boundaries:
+                # Never emit a partial English word on the wait deadline.
+                split = self._word_boundary_split()
+            return [self._emit(timestamp, keep=split)]
         return []
 
-    def _emit(self, timestamp: float, *, is_final: bool = False) -> TextChunk:
-        text = "".join(self._buffer)
+    def _word_boundary_split(self) -> int | None:
+        """Last complete clause/word with enough content; avoid tiny fragments.
+
+        Enumeration marks are not breakpoints: they belong to the list. When
+        no safe boundary exists, the configured deadline/length still wins.
+        """
+
+        buffer = self._buffer
+        for position in range(len(buffer) - 1, 0, -1):
+            if (
+                buffer[position - 1] in "，：,: \t\n"
+                and sum(character.isalnum() for character in buffer[:position]) >= self.min_chars
+            ):
+                return position
+        return None
+
+    def _emit(
+        self,
+        timestamp: float,
+        *,
+        is_final: bool = False,
+        keep: int | None = None,
+    ) -> TextChunk:
+        if keep is None:
+            text = "".join(self._buffer)
+            remainder: list[str] = []
+        else:
+            if keep <= 0 or keep > len(self._buffer):
+                raise ValueError("keep must select a non-empty prefix of the buffer")
+            text = "".join(self._buffer[:keep])
+            remainder = list(self._buffer[keep:])
         if not text:
             raise RuntimeError("Cannot emit an empty sentence chunk")
         chunk = TextChunk(
@@ -461,9 +728,12 @@ class SentenceChunker:
         )
         self._next_sequence += 1
         self._buffer.clear()
-        self._buffer_started_at = None
+        if remainder:
+            self._buffer.extend(remainder)
+        self._buffer_started_at = timestamp if remainder else None
         self._pending_boundary = False
         self._pending_hard_boundary = False
+        self._candidate_period = None
         return chunk
 
     def _speakable_count(self) -> int:
