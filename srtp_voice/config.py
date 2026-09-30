@@ -148,6 +148,8 @@ class AppConfig:
     asr_vad_filter: bool = True
     asr_min_silence_ms: int = 500
     asr_condition_on_previous_text: bool = False
+    # Stream PCM16 snapshots directly into the ASR model (no temporary WAV).
+    stream_asr_in_memory: bool = True
 
     # V1.8 streaming is opt-in at the CLI; these bound callback and worker queues.
     stream_audio_queue_size: int = 32
@@ -239,6 +241,7 @@ class AppConfig:
             asr_vad_filter=env_bool("ASR_VAD_FILTER", True),
             asr_min_silence_ms=max(1, int(os.getenv("ASR_MIN_SILENCE_MS", "500"))),
             asr_condition_on_previous_text=env_bool("ASR_CONDITION_ON_PREVIOUS_TEXT", False),
+            stream_asr_in_memory=env_bool("STREAM_ASR_IN_MEMORY", True),
             stream_audio_queue_size=env_bounded_int(
                 "STREAM_AUDIO_QUEUE_SIZE", 32, 1, 4096
             ),

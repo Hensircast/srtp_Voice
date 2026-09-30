@@ -625,6 +625,7 @@ def capture_streaming_microphone(
         asr,
         sample_rate=cfg.sample_rate,
         temp_parent=cfg.output_dir,
+        prefer_in_memory=bool(getattr(cfg, "stream_asr_in_memory", True)),
     )
     asr_session = IncrementalASRSession(
         transcriber,
