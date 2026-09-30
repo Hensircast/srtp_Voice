@@ -84,6 +84,18 @@
 
 第六次复审在 58c39d5 又返回测量/导入配置混淆和外来路径位置外泄两条 P2。保存提交在写入前被门禁停止，没有继续盲推。独立件真实 **4 failed/3 passed/0.84s**，原 Harness 有限任务仅改基线模块和一处预先批准的测量配置夹具，不弱化原 False/原因断言。助手日志 related **184/13.36s**、full **601/18.10s**，Codex 独立 full **601/16.80s**、编译/pip check 全部通过。Windows 以 POSIX-relative 边界注入，Ubuntu CI 创建真实字面 C:/UNC 文件名，没有 skip。原对话 **15 轮/218 步**已停止；此为发布前快照，新增提交 CI/两线程状态须在线与本地 review6 独立证据核对，不能冒称全部完成。
 
+## 2026-09-30晚至10-01：有界持续优化与额度收口
+
+从干净25c663e、离线doctor健康恢复。CJK新P2由Codex一行ASCII条件+12项门禁修复45056f6，完整815及精确CI36730511188绿后回复解决。原DeepSeek继续主执行HTTP生命周期80c295c（839，CI36732829801）与自有Session复用e0a3472（868，CI36737021424）；两SHA各自复审无重大问题，不当后续批准。借用模块不关闭，惰性独占租约、忙关闭延迟、并发独立fallback；两轮tags/chat真实回环连接off4/on length1、chunked2、gatedEOF2，不等EOF。无本轮模型/设备速度主张。
+
+DeepSeek主执行7字段服务计时末marker、事件、深复制快照与安全baseline；Codex独立补空/截断、交错请求/echo隔离、隐私与真实代码fake管线门禁。完整956/69.17s，aef3497精确CI36741916141 Win956/53.14s、Ubuntu956/45.43s。新复审P2：无标点短答先诊断sink后flush，独立6failed/7.49s；Codex隔离修复6046cf1先最终文本入队，65passed/3.04s。原DeepSeek另实现默认不变的可选validate --max-failures，独立真实失败探针验证控制、合并70通过，代码cf5dfce。两单元分别提交、一次推送；最后本地默认完整992/70.72s、编译与依赖成功，精确新CI/Review闭环按当前断点与在线核实。
+
+保留负面证据，不背书中间稿：HTTP首报告声称日志缺失；pool43failed/90passed与34failed/95passed，Codex只接管方法绑定/closed/兼容与脱敏属性映射；diag26/103与10/44，遗漏import、错误夹具、原dict发布、全量copy、浅snapshot经明确反馈修正98通过；助手误猜桩/事件序列的报告原样保存。diag-2总结后挂住，核对精确本批PID/父/命令后只终止27560 pytest子，关联Python全退出，未删日志/改ACL；单纯输出总结不是正常exit。failfast首4/11漏python绑定仅报告记录，无独立原日志不补造。
+
+原dsh最后36轮516步空闲；本地任务/失败/报告/XML详证outputs/workbench/quota-loop-20260930/run.md。旧展开断点保留于Git e0a3472（更早25c663e），新增经过保留本轮run，本次恢复文件精简而不是丢历史。周额度约11%进入收口，10%缩批、7%保护，不因短窗口自然重置兑换/无限续跑。无下载/安装/训练/付费，新项目元数据下界69871文件/2911729066bytes/1读取缺口，不含外部缓存。原真实Piper/ASR小样本继续在自然语音指南，不重做或混入此批假模型门禁。
+
+最终代码cf5dfce的精确CI36745093363双平台 **992** 通过（Win55.33s/Ubuntu46.49s），compileall/pip check成功。随后回复4146984782并解决诊断短答P2，未合并/不当新复审批准；附属文档CI/新Review按现场核对。
+
 ## 按需加载索引
 
 - 当前目标、授权缺口、助手状态及恢复步骤：WORK_CHECKPOINT.md。

@@ -58,7 +58,7 @@ python -m tools.workbench validate --profile targeted --max-failures 1 tests/tes
 
 - 默认不传该参数时**行为与之前完全一致**：argv、工作目录、`shell=False`、退出码与
   `KeyboardInterrupt` 契约都不变。
-- 只接受真正的正整数；`0`、负数、浮点、字符串等非法值在启动子进程**之前**就被拒绝并返回 `2`。
+- API只接受非bool的正整数；CLI将整数形式的参数解析为int。`0`、负数、浮点参数及非整数文本在启动子进程**之前**被拒绝并返回 `2`。
 - 生效范围仅限 pytest：只给 pytest 追加 `--maxfail=N`，`compileall` 与 `pip check` 不受影响，
   也不会另起进程。`manual` 不执行 pytest，带该参数直接拒绝。
 - 它只是让 pytest 在累计到 N 个失败后自行停止，**不是**墙钟超时，也不会强制终止线程或进程；
