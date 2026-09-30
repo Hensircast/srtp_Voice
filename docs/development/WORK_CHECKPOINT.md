@@ -15,7 +15,7 @@
 - 流式 Piper 独立会话复用进程；同步路径仍单次 CLI。合成/播放有界重叠，取消旧轮不播放预取内容；队列真实完成计数，无固定 join 等待。关闭超时如实报错并保留可回收状态。
 - 自然模式不在普通逗号/顿号/列表冒号处早切；保护跨 token 小数、版本、常见英文缩写，超时/长度 fallback 优先完整子句。同步与流式提示首句直接回答，保留用户长答/重复要求。
 - LLM 小块读取已由真实本地 HTTP 测试验证首 token 不等后续数据；这不是对所有 Ollama 响应传输的普遍提速证明。多句播放时长记录最后完成。
-- Review 修复后最终本地 `python -m tools.workbench validate --profile full`：**676 passed / 39.61s / exit 0**；compileall/pip check 通过，比基线 601 项增加 75 项。唯一 GUID 临时目录，未改全局 TEMP/权限，无 skip 掩盖失败；先前 666 项验证仍是历史结果，不能替代本轮新 SHA CI。
+- 第二条 Review 修复后最终本地 `python -m tools.workbench validate --profile full`：**680 passed / 41.46s / exit 0**；compileall/pip check 通过，比基线 601 项增加 79 项。唯一 GUID 临时目录，未改全局 TEMP/权限，无 skip 掩盖失败；先前 666/676 项仍是历史结果，不能替代本轮新 SHA CI。
 - 代码提交 `7761a71` 的 [CI 36665524047](https://github.com/Hensircast/srtp_Voice/actions/runs/36665524047) 已核实双平台 success：Windows Python 3.11 **666 passed/23.29s**、Ubuntu **666 passed/15.94s**，编译/pip check 成功。
 - 真实已有 Piper、同一模型、固定公开六句、one-shot→persistent→persistent→one-shot：后续中位数 **499.080→228.149 ms、518.718→232.634 ms（下降 54.29%/55.15%）**。首次常驻反而慢约 61–101 ms，未实现/宣称冷启动提速。
 - 源码内 `python -m tools.benchmark_piper` 已真实运行：六个有效 WAV，进程回收，后续中位数 215.859 ms；正式比较仍用上方配对结果，不挑最好数字。
@@ -32,6 +32,7 @@
 - 文档 HEAD `8b99f7e` 的 CI 36665793150 双平台各 666 项成功。Codex 独立复现 Review **4 failed/2 passed/0.26s**，原 dsh 于 11:52 有限修复，日志 **47 passed/1.75s**；助手报告 source_head/自然件子计数沿用旧值，不当现场事实，且其单字符工具调用超过批准 8 次（已承认，停止），不静默扩大预算。
 - Codex 加测普通空白与慢 token 续接，再出现 **2 failed/8 passed/0.25s**；直接补最小超时保护、统一 lookahead 与候选清理，定向 **54 passed/2.85s**、完整 **676 passed/39.61s**。
 - 修复 `1d62616` 的 [CI 36667012047](https://github.com/Hensircast/srtp_Voice/actions/runs/36667012047) 已核实 Windows **676 passed/22.44s**、Ubuntu **676 passed/14.46s**，编译与 pip check 均成功。随后带证据[回复并解决该线程](https://github.com/Hensircast/srtp_Voice/pull/25#discussion_r4140694450)，再请求复审；无新结论时保持待审，不冒充批准。
+- 第二次 Review 返回 [P2 关闭超时仍释放活动资源](https://github.com/Hensircast/srtp_Voice/pull/25#discussion_r4140712496)，thread `PRRT_kwDOSvoFtc6nYahg`。Codex 接管跨模块所有权，独立 **3 failed/1 passed/1.81s**，修正关闭状态/串行关闭/延迟资源释放；受控阻塞、裸 session 重试（含已自行退出线程）及线程已停的异常回收四项门禁，定向 **45 passed/4.67s**、完整 **680 passed/41.46s**。本地已验，待推送/新 SHA CI 成功后回复解决；DeepSeek 无新增任务。
 
 ## DeepSeek、环境与资源现场
 
@@ -44,6 +45,6 @@
 ## 尚未完成与恢复顺序
 
 1. 核对额度、HEAD/dirty、原 dsh 闲置和本轮证据；不重复实现、测试并发或投递同一任务。
-2. #25 已创建并附到当前聊天；数字句号 Review 已修复推送、双平台 676 项通过、带证据回复解决，不重复实现/提交/回复。恢复先核实实际 HEAD/CI 和复审；合理新意见验证修复、通过并推送后再回复解决；无结论/错误如实记录。
+2. #25 已创建并附到当前聊天；数字句号已闭环，不重复实现/提交/回复。第二条关闭超时 Review 本地 680 项已验，先核实其实际 HEAD/CI 与线程是否已闭环；合理新意见验证修复、通过并推送后再回复解决；无结论/错误如实记录。
 3. 按自然语音文档的新 GUID 目录和同轮配置快照做真实 6–10 轮复测，分开首次/后续，评估碎句、空档、措辞、取消与 endpoint_to_playback；若 Ollama 未运行，用户先开启已有服务，保持原模型/实际配置地址。
 4. 不因 Piper 复用数字好看就更换声线或下载权重；声线自然度下一步须有真人反馈和对应授权。

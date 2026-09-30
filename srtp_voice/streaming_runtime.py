@@ -283,6 +283,8 @@ class StreamingResponseRuntime:
             self._release_owned_resource()
             raise
         self._closed = False
+        self._shutdown_complete = False
+        self._shutdown_lock = threading.RLock()
 
     def _owned_resource(self) -> Any | None:
         owned = self._owned_streaming_resource
@@ -478,19 +480,31 @@ class StreamingResponseRuntime:
         return self._tts_worker.backpressure_events
 
     def close(self, *, drain: bool = False) -> None:
-        if self._closed and not self._tts_worker.is_alive:
-            return
-        try:
-            self.cancel_current(reason="runtime_closed")
-        finally:
+        """Reject new turns, but retain owned resources until workers stop.
+
+        A worker timeout is retryable even if its thread finishes before the
+        retry: closed-to-new-work and fully-released are different states.
+        """
+        with self._shutdown_lock:
+            if self._shutdown_complete:
+                return
+            self._closed = True
             try:
-                self._tts_worker.close(drain=drain)
+                self.cancel_current(reason="runtime_closed")
             finally:
-                self._release_owned_resource()
-                self._closed = True
-                with self._archive_lock:
-                    self._audio_by_turn.clear()
-                    self._lip_sync_by_turn.clear()
+                try:
+                    self._tts_worker.close(drain=drain)
+                finally:
+                    # close() can time out while synthesis holds the Piper
+                    # session lock. Calling adapter.close() then would extend
+                    # shutdown to the full synthesis timeout (or invalidate an
+                    # arbitrary owned synthesizer still in use).
+                    if not self._tts_worker.is_alive:
+                        self._release_owned_resource()
+                        self._shutdown_complete = True
+                        with self._archive_lock:
+                            self._audio_by_turn.clear()
+                            self._lip_sync_by_turn.clear()
 
     def _submit_sentence(self, handle: TurnHandle, sentence: TextChunk) -> None:
         self._raise_if_cancelled(handle)
