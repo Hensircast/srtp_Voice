@@ -338,12 +338,13 @@ _ABBREVIATIONS = frozenset(
 )
 
 
-def _protected_point(text: str, index: int) -> bool:
-    """True when the period at ``index`` is not a sentence boundary.
+def _protected_point(text: str, index: int) -> bool | None:
+    """Classify a period: True=continuation, False=sentence end, None=unknown.
 
-    Covers decimals (``3.14``), version-like model names (``v1.2``), English
-    abbreviations (``e.g.``, ``Dr.``) and short initials, so a
-    terminator is never synthesized as its own chunk.
+    An abbreviation can also end a sentence. Retain only genuinely ambiguous
+    periods until lookahead arrives; whitespace alone does not resolve them.
+    English initials/names and inline abbreviations remain conservative
+    heuristics, not a semantic sentence parser.
     """
 
     if not (0 <= index < len(text)) or text[index] != ".":
@@ -353,20 +354,45 @@ def _protected_point(text: str, index: int) -> bool:
     if following.isdigit():
         return True
     if previous.isdigit():
-        return False  # A known non-digit follows, or lookahead is unresolved.
+        return False if following else None
+
     start = index - 1
     while start >= 0 and (
         (text[start].isascii() and text[start].isalnum()) or text[start] == "."
     ):
         start -= 1
     token = text[start + 1 : index].strip(".").lower()
-    if token and token in _ABBREVIATIONS:
+    initial = len(token) == 1 and token.isascii() and token.isalpha()
+    groups = token.split(".")
+    initialism = len(groups) >= 2 and all(
+        len(group) == 1 and group.isascii() and group.isalpha()
+        for group in groups
+    )
+    if token not in _ABBREVIATIONS and not initial and not initialism:
+        return bool(
+            token and len(token) <= 2 and token.isalpha() and following.isalpha()
+        )
+
+    lookahead = text[index + 1 :].lstrip()
+    if not lookahead:
+        return None
+    next_character = lookahead[0]
+    if next_character in _SENTENCE_CLOSERS or next_character in _SENTENCE_HARD_PUNCTUATION:
+        return False
+    if token == "etc":
+        return next_character.isascii() and next_character.isalpha() and next_character.islower()
+    if token in _ABBREVIATIONS:
         return True
-    if len(token) == 1 and token.isascii() and token.isalpha():
-        return True  # Initials and the first dot in a cross-token e.g./i.e.
-    if token and len(token) <= 2 and token.isalpha() and following.isalpha():
-        return True
-    return False
+    if initialism:
+        return next_character.isascii() and next_character.isalpha()
+    if following.isascii() and following.isalpha():
+        return True  # Cross-token e.g./i.e./U.S. without intervening space.
+    before_token = text[start] if start >= 0 else ""
+    if before_token.isalpha() and not before_token.isascii():
+        return False  # CJK answer labels are not English name initials.
+    return next_character.isascii() and next_character.isalpha() and next_character.isupper()
+
+
 _SENTENCE_PUNCTUATION = _SENTENCE_HARD_PUNCTUATION | _SENTENCE_SOFT_PUNCTUATION
 _SENTENCE_CLOSERS = frozenset("”’\"'）)]】}》〉」』")
 
@@ -422,22 +448,33 @@ class SentenceChunker:
         self._last_now: float | None = None
         self._pending_boundary = False
         self._pending_hard_boundary = False
-        # A digit-period at a token edge is unresolved: the next character
-        # decides between a decimal (3.14) and a real sentence end (42. Next).
-        self._candidate_period = False
+        # Original buffer position of a period still awaiting lookahead.
+        # An integer (including zero) also survives whitespace-only tokens.
+        self._candidate_period: int | None = None
         self._next_sequence = 0
 
     def feed(self, text: str, *, now: float | None = None) -> list[TextChunk]:
         if not isinstance(text, str):
             raise TypeError("SentenceChunker.feed requires text")
         timestamp = self._now(now)
-        # A delayed decimal continuation must be incorporated before timeout
-        # flushing can irrevocably emit the preceding digit-period.
-        if self._candidate_period and text:
-            self._candidate_period = False
-            self._pending_boundary = not text[0].isdigit()
-            self._pending_hard_boundary = self._pending_boundary
+        # Incorporate slow lookahead before timeout can cut a true abbreviation
+        # or decimal. One predicate judges both whole-token and cross-token text.
+        if self._candidate_period is not None:
+            position = self._candidate_period
+            state = _protected_point("".join(self._buffer) + text, position)
             chunks: list[TextChunk] = []
+            if state is not None:
+                self._candidate_period = None
+                self._pending_boundary = state is False
+                self._pending_hard_boundary = self._pending_boundary
+                if self._pending_boundary and position + 1 < len(self._buffer):
+                    end = position + 1
+                    while end < len(self._buffer) and self._buffer[end] in _SENTENCE_CLOSERS:
+                        end += 1
+                    if end < len(self._buffer):
+                        # Spaces already buffered belong to the next sentence,
+                        # not to the candidate sentence delivered to TTS.
+                        chunks.append(self._emit(timestamp, keep=end))
         else:
             chunks = self._flush_due_at(timestamp)
 
@@ -445,15 +482,11 @@ class SentenceChunker:
         base = len(self._buffer)
         for offset, character in enumerate(text):
             index = base + offset
-            # A candidate is unresolved only at the very edge of this token; by
-            # the next character the lookahead is known.
-            candidate = (
-                character == "."
-                and index == len(combined) - 1
-                and index > 0
-                and combined[index - 1].isdigit()
+            period_state = (
+                _protected_point(combined, index) if character == "." else False
             )
-            protected = character == "." and _protected_point(combined, index)
+            candidate = character == "." and period_state is None
+            protected = character == "." and period_state is True
             if self._pending_boundary:
                 if character in _SENTENCE_CLOSERS or character in _SENTENCE_PUNCTUATION:
                     pass
@@ -465,11 +498,11 @@ class SentenceChunker:
             self._buffer.append(character)
 
             if candidate:
-                self._candidate_period = True
+                self._candidate_period = len(self._buffer) - 1
                 self._pending_boundary = False
                 self._pending_hard_boundary = False
             elif protected:
-                # A decimal or abbreviation period never becomes a boundary.
+                # Context confirms a decimal, abbreviation or name continuation.
                 self._pending_boundary = False
                 self._pending_hard_boundary = False
             elif character in self._hard_punctuation:
@@ -527,11 +560,8 @@ class SentenceChunker:
         ):
             return None
         buffered = "".join(self._buffer)
-        if self._candidate_period:
-            # Unresolved digit-period: previewing could be irreversible.
-            return None
-        if buffered.endswith(".") and _protected_point(buffered, len(buffered) - 1):
-            # "3." at a token edge is not yet a decided sentence end.
+        if self._candidate_period is not None:
+            # Do not re-judge already-decided boundaries without their lookahead.
             return None
         return TextChunk(
             text=buffered,
@@ -547,7 +577,7 @@ class SentenceChunker:
             and timestamp - self._buffer_started_at >= self.max_wait_seconds
             and self._speakable_count() >= self.min_chars
             and not self._pending_hard_boundary
-            and not self._candidate_period
+            and self._candidate_period is None
         ):
             split = None
             if self.prefer_sentence_boundaries:
@@ -603,7 +633,7 @@ class SentenceChunker:
         self._buffer_started_at = timestamp if remainder else None
         self._pending_boundary = False
         self._pending_hard_boundary = False
-        self._candidate_period = False
+        self._candidate_period = None
         return chunk
 
     def _speakable_count(self) -> int:
