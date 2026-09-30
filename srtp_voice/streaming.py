@@ -353,7 +353,7 @@ def _protected_point(text: str, index: int) -> bool:
     if following.isdigit():
         return True
     if previous.isdigit():
-        return True
+        return False  # A known non-digit follows, or lookahead is unresolved.
     start = index - 1
     while start >= 0 and (
         (text[start].isascii() and text[start].isalnum()) or text[start] == "."
@@ -422,18 +422,37 @@ class SentenceChunker:
         self._last_now: float | None = None
         self._pending_boundary = False
         self._pending_hard_boundary = False
+        # A digit-period at a token edge is unresolved: the next character
+        # decides between a decimal (3.14) and a real sentence end (42. Next).
+        self._candidate_period = False
         self._next_sequence = 0
 
     def feed(self, text: str, *, now: float | None = None) -> list[TextChunk]:
         if not isinstance(text, str):
             raise TypeError("SentenceChunker.feed requires text")
         timestamp = self._now(now)
-        chunks = self._flush_due_at(timestamp)
+        # A delayed decimal continuation must be incorporated before timeout
+        # flushing can irrevocably emit the preceding digit-period.
+        if self._candidate_period and text:
+            self._candidate_period = False
+            self._pending_boundary = not text[0].isdigit()
+            self._pending_hard_boundary = self._pending_boundary
+            chunks: list[TextChunk] = []
+        else:
+            chunks = self._flush_due_at(timestamp)
 
         combined = "".join(self._buffer) + text
         base = len(self._buffer)
         for offset, character in enumerate(text):
             index = base + offset
+            # A candidate is unresolved only at the very edge of this token; by
+            # the next character the lookahead is known.
+            candidate = (
+                character == "."
+                and index == len(combined) - 1
+                and index > 0
+                and combined[index - 1].isdigit()
+            )
             protected = character == "." and _protected_point(combined, index)
             if self._pending_boundary:
                 if character in _SENTENCE_CLOSERS or character in _SENTENCE_PUNCTUATION:
@@ -445,7 +464,11 @@ class SentenceChunker:
                 self._buffer_started_at = timestamp
             self._buffer.append(character)
 
-            if protected:
+            if candidate:
+                self._candidate_period = True
+                self._pending_boundary = False
+                self._pending_hard_boundary = False
+            elif protected:
                 # A decimal or abbreviation period never becomes a boundary.
                 self._pending_boundary = False
                 self._pending_hard_boundary = False
@@ -504,6 +527,9 @@ class SentenceChunker:
         ):
             return None
         buffered = "".join(self._buffer)
+        if self._candidate_period:
+            # Unresolved digit-period: previewing could be irreversible.
+            return None
         if buffered.endswith(".") and _protected_point(buffered, len(buffered) - 1):
             # "3." at a token edge is not yet a decided sentence end.
             return None
@@ -521,6 +547,7 @@ class SentenceChunker:
             and timestamp - self._buffer_started_at >= self.max_wait_seconds
             and self._speakable_count() >= self.min_chars
             and not self._pending_hard_boundary
+            and not self._candidate_period
         ):
             split = None
             if self.prefer_sentence_boundaries:
@@ -576,6 +603,7 @@ class SentenceChunker:
         self._buffer_started_at = timestamp if remainder else None
         self._pending_boundary = False
         self._pending_hard_boundary = False
+        self._candidate_period = False
         return chunk
 
     def _speakable_count(self) -> int:
