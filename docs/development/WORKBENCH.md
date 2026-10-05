@@ -49,6 +49,21 @@ sounddevice / PortAudio / 默认输入输出设备）、Piper 与 SER 模型文�
 - 退出码：`0` = 全部通过，其他 = 子进程退出码，`manual` 恒为 `0`（未运行任何测试）。
 - CI 只调用该统一入口，不再重复散落 compileall / pytest / pip check。
 
+### 可选失败限额 `--max-failures`
+
+```bash
+python -m tools.workbench validate --profile full --max-failures 3
+python -m tools.workbench validate --profile targeted --max-failures 1 tests/test_workbench.py
+```
+
+- 默认不传该参数时**行为与之前完全一致**：argv、工作目录、`shell=False`、退出码与
+  `KeyboardInterrupt` 契约都不变。
+- API只接受非bool的正整数；CLI将整数形式的参数解析为int。`0`、负数、浮点参数及非整数文本在启动子进程**之前**被拒绝并返回 `2`。
+- 生效范围仅限 pytest：只给 pytest 追加 `--maxfail=N`，`compileall` 与 `pip check` 不受影响，
+  也不会另起进程。`manual` 不执行 pytest，带该参数直接拒绝。
+- 它只是让 pytest 在累计到 N 个失败后自行停止，**不是**墙钟超时，也不会强制终止线程或进程；
+  退出码仍是子进程真实退出码，因此不能据此声称修复了卡住、更没有产品提速含义。
+
 ## baseline：延迟基线
 
 ```bash
@@ -106,6 +121,8 @@ $m.turns | ForEach-Object {
 ```
 
 `snapshot` 只记录实际配置，标注 `not_measured`；它必须配对同一次运行的 metrics。对外分享计时基线即可，录音、事件文字和 memory 保持本地。第一条记录未必成功，不自动称为冷启动；取消轮可能缺少部分指标。软件 playback 事件不等于声卡实际出声。
+
+ASR 来源隐私：`small`、`tiny.en` 等普通模型名保持可读；含目录分隔符的 ASR_MODEL（包括无法无探测地区分的斜杠式远程模型 ID）只在导出视图中转换为 `pid1-` 身份，实际传给 ASR 加载器的值不变。项目内相对/绝对写法身份一致，不同目录不同；外部、网络和 `C:relative/model` 等含义不确定的写法未知且不探测。身份只表示配置字符串，不证明模型存在、内容或远程来源。旧快照若曾保存原始路径，指纹不应被当成同一来源；重新为实际运行生成快照，不补造旧测量来源。
 
 ## 新机器说明
 

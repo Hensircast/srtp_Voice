@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import codecs
 import json
+import threading
 from time import monotonic
-from typing import Any, Callable, Dict, Iterable, Iterator, List
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping
 
 try:
     import requests
@@ -109,6 +110,75 @@ class _EchoOnlyStreamError(LLMResponseError):
 STREAMING_FALLBACK_REPLY = "抱歉，我没有生成可靠的回答，请换一种说法再试一次。"
 
 
+_OLLAMA_DURATION_KEYS: Dict[str, str] = {
+    "total_duration": "server_total_ms",
+    "load_duration": "model_load_ms",
+    "prompt_eval_duration": "input_processing_ms",
+    "eval_duration": "generation_ms",
+}
+_OLLAMA_COUNT_KEYS: Dict[str, str] = {
+    "prompt_eval_count": "input_tokens",
+    "prompt_eval_cached_count": "input_cached_tokens",
+    "eval_count": "output_tokens",
+}
+_OLLAMA_TIMING_MAX = 2**63 - 1
+
+
+def _ollama_raw_int(value: Any) -> int | None:
+    """Accept only a real non-negative integer within the signed 64-bit range."""
+
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if value < 0 or value > _OLLAMA_TIMING_MAX:
+        return None
+    return value
+
+
+def _extract_ollama_server_timings(body: Any) -> Dict[str, Any]:
+    """Keep only the whitelisted numeric server timings of one NDJSON object.
+
+    Durations arrive as integer nanoseconds and are converted to milliseconds;
+    counts stay integers. Missing, negative, non-integer, non-finite or
+    out-of-range values are dropped, while zero is legal and is preserved.
+    Everything else (model, url, prompt, message, thinking, context, ...) is
+    discarded, so this can never carry user text or model identity.
+    """
+
+    if not isinstance(body, Mapping):
+        return {}
+    extracted: Dict[str, Any] = {}
+    for raw_key, target in _OLLAMA_DURATION_KEYS.items():
+        value = _ollama_raw_int(body.get(raw_key))
+        if value is None:
+            continue
+        extracted[target] = round(value / 1_000_000, 3)
+    for raw_key, target in _OLLAMA_COUNT_KEYS.items():
+        value = _ollama_raw_int(body.get(raw_key))
+        if value is None:
+            continue
+        extracted[target] = value
+    return extracted
+
+
+def _close_quietly(target: Any) -> None:
+    """Release an optional resource without masking the primary failure.
+
+    GeneratorExit, cancellation and the original read/submit error must keep
+    propagating, so only ordinary cleanup exceptions are swallowed here;
+    KeyboardInterrupt and SystemExit are never suppressed.
+    """
+
+    if target is None:
+        return
+    close = getattr(target, "close", None)
+    if not callable(close):
+        return
+    try:
+        close()
+    except Exception:
+        pass
+
+
 def _require_requests():
     if requests is None:
         raise RuntimeError(
@@ -185,11 +255,105 @@ def _is_echo_only_reply(user_text: str, reply_text: str) -> bool:
     return bool(normalized_user) and normalized_user == normalized_reply
 
 
+class _HTTPPoolClosedError(RuntimeError):
+    """Raised when a stream is requested after the pooled session was closed."""
+
+
+class _PooledHTTPClient:
+    """Thin view over one private requests.Session for streaming calls only.
+
+    ``Session`` exposes no ``Timeout``/``HTTPError``/``RequestException``
+    attributes, so the error types always come from the original module. The
+    session stays process-local; no global or proxy configuration is touched.
+    """
+
+    def __init__(self, session: Any, module: Any) -> None:
+        self._session = session
+        self.Timeout = module.Timeout
+        self.HTTPError = module.HTTPError
+        self.RequestException = module.RequestException
+
+    def get(self, url, **kwargs):
+        return self._session.get(url, **kwargs)
+
+    def post(self, url, **kwargs):
+        return self._session.post(url, **kwargs)
+
+
 class StrategyGenerator:
     """Generate reply text and structured robot action strategy."""
 
     def __init__(self, cfg: AppConfig):
         self.cfg = cfg
+        # The session is opt-in and created lazily: a plain
+        # ``StrategyGenerator(cfg)`` never opens a connection.
+        self._http_lock = threading.RLock()
+        self._http_reuse_enabled = False
+        self._http_client: _PooledHTTPClient | None = None
+        self._http_busy = False
+        self._http_closed = False
+
+    def enable_http_reuse(self) -> bool:
+        """Allow one lazily created pooled session for streaming requests."""
+
+        with self._http_lock:
+            if self._http_closed:
+                return False
+            self._http_reuse_enabled = True
+            return True
+
+    def _acquire_http_client(self) -> tuple[Any, bool]:
+        """Lease the owned client, or use independent requests while busy."""
+        with self._http_lock:
+            if self._http_closed:
+                raise _HTTPPoolClosedError(
+                    "LLM HTTP reuse is closed; create a new StrategyGenerator "
+                    "or keep the existing one open for the whole session."
+                )
+            module = _require_requests()
+            if not self._http_reuse_enabled or self._http_busy:
+                # No reuse, or another stream holds the session: independent
+                # module requests keep concurrent turns from sharing one
+                # non-thread-safe session.
+                return module, False
+            if self._http_client is None:
+                session = module.Session()
+                try:
+                    client = _PooledHTTPClient(session, module)
+                except BaseException:
+                    # A wrapping failure must not leak the session we just made.
+                    _close_quietly(session)
+                    raise
+                self._http_client = client
+            self._http_busy = True
+            return self._http_client, True
+
+    def _release_http_client(self, leased: bool) -> None:
+        if not leased:
+            return
+        resource: _PooledHTTPClient | None = None
+        with self._http_lock:
+            self._http_busy = False
+            if self._http_closed:
+                resource = self._http_client
+                self._http_client = None
+        if resource is not None:
+            # Closed while a stream was reading: close outside the lock, once.
+            _close_quietly(resource._session)
+
+    def close(self) -> None:
+        """Idempotent: close the pooled session, or defer it while in use."""
+
+        resource: _PooledHTTPClient | None = None
+        with self._http_lock:
+            if self._http_closed:
+                return
+            self._http_closed = True
+            if not self._http_busy:
+                resource = self._http_client
+                self._http_client = None
+        if resource is not None:
+            _close_quietly(resource._session)
 
     def generate(self, user_text: str, emotion: EmotionResult, history: List[Dict[str, Any]]) -> StrategyResult:
         backend = self.cfg.llm_backend.lower()
@@ -241,6 +405,9 @@ class StrategyGenerator:
         generated text has to be delayed merely to identify the last token.
         """
 
+        with self._http_lock:
+            if self._http_closed:
+                raise _HTTPPoolClosedError("StrategyGenerator streaming HTTP is closed")
         backend = self.cfg.llm_backend.lower()
         if backend != "ollama":
             result = self.generate(user_text, emotion, history)
@@ -258,47 +425,72 @@ class StrategyGenerator:
 
         def emit(parts: Iterable[str]) -> Iterator[TextChunk]:
             nonlocal sequence, emitted_text
-            for part in parts:
-                if not part:
-                    continue
-                emitted_text = True
-                yield TextChunk(
-                    text=part,
-                    is_final=False,
-                    timestamp_ms=int(monotonic() * 1000),
-                    turn_id=turn_id,
-                    sequence_id=sequence,
-                )
-                sequence += 1
-
-        try:
-            req = _require_requests()
-            if self._uses_standard_ollama_chat_url():
-                self._check_ollama()
-            messages = self._build_streaming_messages(user_text, emotion, history)
+            part_iterator = iter(parts)
             try:
-                parts = self._validated_stream_reply(
-                    user_text,
-                    self._request_ollama_text_stream(req, messages),
-                )
-                yield from emit(parts)
-            except _EchoOnlyStreamError:
-                # The possible echo prefix is held back, so a repair cannot
-                # duplicate already emitted text. Repair is collected because
-                # correctness matters more than latency on this exceptional path.
-                try:
-                    repair_parts = list(
-                        self._validated_stream_reply(
-                            user_text,
-                            self._request_ollama_text_stream(
-                                req,
-                                self._build_echo_repair_messages(user_text, history),
-                            ),
-                        )
+                for part in part_iterator:
+                    if not part:
+                        continue
+                    emitted_text = True
+                    yield TextChunk(
+                        text=part,
+                        is_final=False,
+                        timestamp_ms=int(monotonic() * 1000),
+                        turn_id=turn_id,
+                        sequence_id=sequence,
                     )
-                except Exception:
-                    repair_parts = [STREAMING_FALLBACK_REPLY]
-                yield from emit(repair_parts)
+                    sequence += 1
+            finally:
+                # An early stop or GeneratorExit must still release the inner
+                # stream reader; plain lists simply have no close().
+                _close_quietly(part_iterator)
+
+        # Per-call, per-stream: never a class attribute, thread-local or global.
+        server_requests: List[Dict[str, Any]] = []
+        try:
+            messages = self._build_streaming_messages(user_text, emotion, history)
+            req, leased = self._acquire_http_client()
+            try:
+                if self._uses_standard_ollama_chat_url():
+                    # The catalogue precheck runs while this stream owns the
+                    # lease, so it uses this request client as well.
+                    if leased:
+                        self._check_ollama(req)
+                    else:
+                        # Preserve the legacy no-argument precheck hook for
+                        # direct callers and their existing test adapters.
+                        self._check_ollama()
+                try:
+                    parts = self._validated_stream_reply(
+                        user_text,
+                        self._request_ollama_text_stream(req, messages, server_requests),
+                    )
+                    yield from emit(parts)
+                except _EchoOnlyStreamError:
+                    # The possible echo prefix is held back, so a repair cannot
+                    # duplicate already emitted text. Repair is collected because
+                    # correctness matters more than latency on this exceptional path.
+                    try:
+                        repair_parts = list(
+                            self._validated_stream_reply(
+                                user_text,
+                                self._request_ollama_text_stream(
+                                    req,
+                                    self._build_echo_repair_messages(user_text, history),
+                                    server_requests,
+                                ),
+                            )
+                        )
+                    except Exception:
+                        repair_parts = [STREAMING_FALLBACK_REPLY]
+                    yield from emit(repair_parts)
+            finally:
+                # Normal end, cancellation, echo repair and every exception all
+                # return the lease exactly once.
+                self._release_http_client(leased)
+        except _HTTPPoolClosedError:
+            # Lifecycle shutdown is not a model failure: never rewrite it into
+            # a mock reply.
+            raise
         except Exception:
             if emitted_text or not self.cfg.llm_fallback_to_mock:
                 raise
@@ -306,12 +498,19 @@ class StrategyGenerator:
 
         if not emitted_text:
             raise LLMResponseError("Ollama returned an empty text stream.")
+        final_diagnostics: Dict[str, Any] = {}
+        if server_requests:
+            # A per-request copy: the caller can never mutate our state, and the
+            # entries stay separate (the echo repair is its own request, not a
+            # part of any end-to-end figure).
+            final_diagnostics["llm_server_requests"] = [dict(item) for item in server_requests]
         yield TextChunk(
             text="",
             is_final=True,
             timestamp_ms=int(monotonic() * 1000),
             turn_id=turn_id,
             sequence_id=sequence,
+            diagnostics=final_diagnostics,
         )
 
     def _mock_generate(self, user_text: str, emotion: EmotionResult, history: List[Dict[str, Any]]) -> StrategyResult:
@@ -446,6 +645,7 @@ class StrategyGenerator:
         self,
         req: Any,
         messages: List[Dict[str, str]],
+        diagnostics: List[Dict[str, Any]] | None = None,
     ) -> Iterator[str]:
         payload = {
             "model": self.cfg.llm_model,
@@ -457,32 +657,37 @@ class StrategyGenerator:
                 "num_ctx": self.cfg.llm_context_tokens,
             },
         }
-        try:
-            response = req.post(
-                self.cfg.llm_ollama_chat_url,
-                json=payload,
-                timeout=self.cfg.llm_timeout_seconds,
-                stream=True,
-            )
-            response.raise_for_status()
-        except req.Timeout as exc:
-            raise RuntimeError("Ollama streaming request timed out.") from exc
-        except req.HTTPError as exc:
-            status = exc.response.status_code if exc.response is not None else "unknown"
-            response_text = exc.response.text[:500] if exc.response is not None else ""
-            detail = f" Response body: {response_text}" if response_text else ""
-            raise RuntimeError(f"Ollama streaming returned HTTP {status}.{detail}") from exc
-        except req.RequestException as exc:
-            raise RuntimeError(
-                f"Cannot connect to Ollama at {self.cfg.llm_ollama_chat_url}."
-            ) from exc
-
+        response: Any = None
+        bodies: Any = None
         saw_done = False
         saw_content = False
+        completed_stats: Dict[str, Any] = {}
         try:
             try:
-                bodies = _iter_ndjson_objects(response.iter_content(chunk_size=4096))
-                for body in bodies:
+                response = req.post(
+                    self.cfg.llm_ollama_chat_url,
+                    json=payload,
+                    timeout=self.cfg.llm_timeout_seconds,
+                    stream=True,
+                )
+                response.raise_for_status()
+            except req.Timeout as exc:
+                raise RuntimeError("Ollama streaming request timed out.") from exc
+            except req.HTTPError as exc:
+                status = exc.response.status_code if exc.response is not None else "unknown"
+                response_text = exc.response.text[:500] if exc.response is not None else ""
+                detail = f" Response body: {response_text}" if response_text else ""
+                raise RuntimeError(
+                    f"Ollama streaming returned HTTP {status}.{detail}"
+                ) from exc
+            except req.RequestException as exc:
+                raise RuntimeError(
+                    f"Cannot connect to Ollama at {self.cfg.llm_ollama_chat_url}."
+                ) from exc
+
+            try:
+                bodies = response.iter_content(chunk_size=1)
+                for body in _iter_ndjson_objects(bodies):
                     error = body.get("error")
                     if error:
                         raise LLMResponseError(f"Ollama stream error: {error}")
@@ -501,21 +706,29 @@ class StrategyGenerator:
                                 "Ollama stream was truncated because done_reason=length. "
                                 "Increase LLM_MAX_TOKENS."
                             )
+                        if diagnostics is not None:
+                            completed_stats = _extract_ollama_server_timings(body)
                         saw_done = True
                         break
             except req.Timeout as exc:
                 raise RuntimeError("Ollama text stream timed out while reading.") from exc
             except req.RequestException as exc:
                 raise RuntimeError("Ollama text stream was interrupted.") from exc
-        finally:
-            close = getattr(response, "close", None)
-            if callable(close):
-                close()
+            finally:
+                # Only the reader is closed here; the response is closed by the
+                # outermost finally, and a read failure must not stop that.
+                _close_quietly(bodies)
 
-        if not saw_done:
-            raise LLMResponseError("Ollama text stream ended before done=true.")
-        if not saw_content:
-            raise LLMResponseError("Ollama returned an empty text stream.")
+            if not saw_done:
+                raise LLMResponseError("Ollama text stream ended before done=true.")
+            if not saw_content:
+                raise LLMResponseError("Ollama returned an empty text stream.")
+            if diagnostics is not None and completed_stats:
+                diagnostics.append(dict(completed_stats))
+        finally:
+            # Covers the status error too: the response exists by then, so it is
+            # always released; post failures leave it None and nothing closes.
+            _close_quietly(response)
 
     @staticmethod
     def _validated_stream_reply(
@@ -527,20 +740,25 @@ class StrategyGenerator:
         buffered: List[str] = []
         safe_to_emit = _is_explicit_repeat_request(user_text)
         normalized_user = _normalize_echo_text(user_text)
-        for token in tokens:
-            buffered.append(token)
-            if not safe_to_emit:
-                candidate = "".join(buffered)
-                normalized_candidate = "".join(candidate.strip().casefold().split())
-                without_trailing = normalized_candidate.rstrip(_ECHO_TRAILING_PUNCTUATION)
-                safe_to_emit = not (
-                    not without_trailing
-                    or normalized_user.startswith(without_trailing)
-                    or without_trailing == normalized_user
-                )
-            if safe_to_emit:
-                yield "".join(buffered)
-                buffered.clear()
+        token_iterator = iter(tokens)
+        try:
+            for token in token_iterator:
+                buffered.append(token)
+                if not safe_to_emit:
+                    candidate = "".join(buffered)
+                    normalized_candidate = "".join(candidate.strip().casefold().split())
+                    without_trailing = normalized_candidate.rstrip(_ECHO_TRAILING_PUNCTUATION)
+                    safe_to_emit = not (
+                        not without_trailing
+                        or normalized_user.startswith(without_trailing)
+                        or without_trailing == normalized_user
+                    )
+                if safe_to_emit:
+                    yield "".join(buffered)
+                    buffered.clear()
+        finally:
+            # Releasing this iterator also releases the HTTP stream underneath.
+            _close_quietly(token_iterator)
 
         if buffered:
             reply = "".join(buffered)
@@ -679,9 +897,12 @@ class StrategyGenerator:
         derived_chat_url = self.cfg.llm_lmstudio_base_url.rstrip("/") + "/v1/chat/completions"
         return self.cfg.llm_lmstudio_chat_url.rstrip("/") == derived_chat_url.rstrip("/")
 
-    def _check_ollama(self) -> None:
-        req = _require_requests()
+    def _check_ollama(self, req: Any | None = None) -> None:
+        """Check the Ollama catalogue; the streaming path passes its own client."""
+
+        req = req if req is not None else _require_requests()
         tags_url = self.cfg.llm_ollama_base_url.rstrip("/") + "/api/tags"
+        resp = None
         try:
             resp = req.get(tags_url, timeout=5)
             resp.raise_for_status()
@@ -692,6 +913,9 @@ class StrategyGenerator:
             ) from exc
         except ValueError as exc:
             raise RuntimeError("Ollama /api/tags returned invalid JSON.") from exc
+        finally:
+            # The tags response is always released, including on the error paths.
+            _close_quietly(resp)
 
         names = {m.get("name", "") for m in data.get("models", []) if isinstance(m, dict)}
         if self.cfg.llm_model not in names:
@@ -737,6 +961,9 @@ class StrategyGenerator:
             "<user_request> 是必须回答的主要内容。"
             "<speech_emotion> 只能影响措辞、语气和动作策略，不能覆盖任务内容或代替问题答案。"
             "reply_text 面向 TTS，应使用自然、简洁的中文口语。"
+            "像与人面对面交谈：第一句先给核心回答，通常 2-4 个短句；"
+            "用户明确要求长回答、列表或原样重复时遵从用户要求；"
+            "不要套固定开场或结束语，不要过度使用口头禅。"
             "action 必须是对象，并可包含 expression, gaze, blink, mouth_sync, tts_style, servo_targets_placeholder。"
             "数字、代号、型号、姓名、日期和专有名词必须逐字保留。"
             "查询历史事实时必须依据历史消息原文回答。"
@@ -813,6 +1040,9 @@ class StrategyGenerator:
                     "历史只用于事实和上下文，不要照搬上一轮的固定开场、结尾或格式要求。"
                     "准确保留数字、型号、姓名、日期和历史代号。"
                     "语音情绪只能影响措辞和语气，不能替代问题答案。"
+                    "像与人面对面交谈：第一句先给核心回答，通常 2-4 个短句；"
+                    "用户明确要求长回答、列表或原样重复时遵从用户要求。"
+                    "不要套固定开场或结束语，不要过度使用口头禅。"
                     "不要输出换行、Markdown 换行或列表符号，句子之间只使用自然标点。"
                 ),
             }

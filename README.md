@@ -2,6 +2,8 @@
 
 开发与恢复入口：[工作台与协作工具](docs/development/WORKBENCH.md)、[当前断点](docs/development/WORK_CHECKPOINT.md)、[项目协作规则](AGENTS.md)。工具建设与语音性能实测分开验收，离线测试不等同于真实设备部署通过。
 
+语音连续性迭代、真实 Piper 小样本测量及下一轮复测：[V1.8 自然语音与响应速度](docs/development/V1.8_NATURAL_VOICE.md)。后续句合成提速不等于整条对话链路或真人自然度已验收。
+
 ## 1. 项目定位
 
 本项目是回合式机器人头部语音交互程序。它在单个 Python 进程中组织音频采集、语音理解、韵律情绪融合、回复生成、语音合成和动作文件输出。默认仍运行 V1.6 同步兼容路径；显式传入 `--streaming` 时启用 V1.8 的流式麦克风帧、partial/final ASR、Ollama token 流、按句 TTS、取消与时延指标。
@@ -30,7 +32,7 @@ V1.6 同步路径已有 Windows 本地真实工作流记录；V1.8 已完成 Win
 | ASR | `mock`、`faster_whisper` | 同步完整 WAV；V1.8 对 PCM 快照生成 partial，并只提交一次 final |
 | SER | `heuristic`、`sensevoice` | 标准库韵律规则，或本地 SenseVoiceSmall 标签与韵律融合 |
 | LLM | `mock`、`ollama`、`lmstudio` | 同步结构化策略；V1.8 Ollama 使用 UTF-8 NDJSON token 流 |
-| TTS | `mock`、`edge_tts`、`piper` | 同步整段 WAV；V1.8 将句子依次交给单 TTS 工作线程 |
+| TTS | `mock`、`edge_tts`、`piper` | 同步整段 WAV；V1.8 有界合成预取、顺序播放，Piper 可跨句/轮常驻复用 |
 
 默认配置保持轻量：ASR 为 `mock`、SER 为 `heuristic`、TTS 为 `mock`；LLM 默认为本地 Ollama。
 

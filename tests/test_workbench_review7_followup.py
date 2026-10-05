@@ -72,8 +72,11 @@ def test_config_keys_are_declared_once_and_cover_pipeline_settings():
     assert len(latency.CONFIG_KEYS) == len(set(latency.CONFIG_KEYS))
     fields = set(AppConfig.__dataclass_fields__)
     for key in latency.CONFIG_KEYS:
-        assert key in fields, key
-    assert "stream_natural_boundaries" not in latency.CONFIG_KEYS
+        assert latency.CONFIG_ATTRIBUTES.get(key, key) in fields, key
+    if "stream_natural_boundaries" in fields:
+        assert "stream_natural_boundaries" in latency.CONFIG_KEYS
+    else:
+        assert "stream_natural_boundaries" not in latency.CONFIG_KEYS
 
 
 @pytest.mark.parametrize("value", ["3.11", "3.12.10", "3.14.0rc1"])

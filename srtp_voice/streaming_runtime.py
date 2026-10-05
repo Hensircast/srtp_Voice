@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import queue
 import threading
 import uuid
 import wave
@@ -25,6 +26,7 @@ from .streaming import (
     TextChunk,
     TurnTimingSnapshot,
     is_speakable_text,
+    sanitize_llm_diagnostics,
 )
 from .streaming_asr import (
     IncrementalASRSession,
@@ -227,7 +229,25 @@ class StreamingResponseRuntime:
     ) -> None:
         self.cfg = cfg
         self.generator = generator
+        self._caller_tts = tts
         self.tts = tts
+        self._owned_streaming_resource: Any | None = None
+        # Streaming asks the adapter for its own session adapter; the caller's
+        # adapter keeps the one-shot CLI path. A returned resource that is not
+        # an adapter (for example a bare session) is still owned by this runtime
+        # and closed on failure/close. A factory exception closes only the
+        # resource it created, never the caller's shared adapter.
+        streaming_factory = getattr(tts, "for_streaming", None)
+        if callable(streaming_factory):
+            # A factory owns cleanup until it returns. Closing the caller here
+            # would invalidate a shared adapter when no resource was acquired.
+            produced = streaming_factory()
+            if produced is not None and produced is not tts:
+                has_synthesize = callable(getattr(produced, "synthesize", None))
+                if has_synthesize:
+                    self.tts = produced
+                else:
+                    self._owned_streaming_resource = produced
         self._archive_lock = threading.Lock()
         self._audio_by_turn: Dict[str, list[AudioChunk]] = {}
         self._lip_sync_by_turn: Dict[str, list[Dict[str, Any]]] = {}
@@ -236,28 +256,67 @@ class StreamingResponseRuntime:
             cancel_hook=self._cancel_tts_turn,
             id_factory=id_factory,
         )
-        self._tts_worker = IncrementalTTSPlayer(
-            tts,
-            queue_maxsize=cfg.stream_tts_queue_size,
-            temp_parent=temp_parent,
-            player=player,
-            playback_enabled=playback_enabled,
-            on_audio_ready=self._on_audio_ready,
-            on_playback_started=self._on_playback_started,
-            on_playback_finished=self._on_playback_finished,
-            on_error=self._on_tts_error,
-        )
-        self._tts_worker.start()
+        try:
+            self._tts_worker = IncrementalTTSPlayer(
+                self.tts,
+                queue_maxsize=cfg.stream_tts_queue_size,
+                temp_parent=temp_parent,
+                player=player,
+                playback_enabled=playback_enabled,
+                on_audio_ready=self._on_audio_ready,
+                on_playback_started=self._on_playback_started,
+                on_playback_finished=self._on_playback_finished,
+                on_error=self._on_tts_error,
+            )
+        except Exception:
+            # Worker creation failed: release the factory-created resource this
+            # runtime owns, never the caller's shared adapter.
+            self._release_owned_resource()
+            raise
+        try:
+            self._tts_worker.start()
+        except Exception:
+            # Worker start failed after creation: close the worker and the
+            # owned resource, then surface the original failure.
+            try:
+                self._tts_worker.close(drain=False)
+            except Exception:  # noqa: BLE001 - preserve the original error
+                pass
+            self._release_owned_resource()
+            raise
         self._closed = False
+        self._shutdown_complete = False
+        self._shutdown_lock = threading.RLock()
+
+    def _owned_resource(self) -> Any | None:
+        owned = self._owned_streaming_resource
+        if owned is not None:
+            return owned
+        if self.tts is self._caller_tts:
+            return None
+        return self.tts
+
+    def _release_owned_resource(self) -> None:
+        owned = self._owned_resource()
+        if owned is None:
+            return
+        close = getattr(owned, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:  # noqa: BLE001 - shutdown must not raise
+                pass
+        self._owned_streaming_resource = None
 
     def begin_turn(self) -> TurnHandle:
-        if self._closed:
-            raise RuntimeError("StreamingResponseRuntime is closed")
-        handle = self.controller.start_turn()
-        with self._archive_lock:
-            self._audio_by_turn[handle.turn_id] = []
-            self._lip_sync_by_turn[handle.turn_id] = []
-        return handle
+        with self._shutdown_lock:
+            if self._closed:
+                raise RuntimeError("StreamingResponseRuntime is closed")
+            handle = self.controller.start_turn()
+            with self._archive_lock:
+                self._audio_by_turn[handle.turn_id] = []
+                self._lip_sync_by_turn[handle.turn_id] = []
+            return handle
 
     def emit(
         self,
@@ -286,6 +345,9 @@ class StreamingResponseRuntime:
             min_chars=self.cfg.stream_sentence_min_chars,
             max_chars=self.cfg.stream_sentence_max_chars,
             max_wait_seconds=self.cfg.stream_sentence_max_wait_seconds,
+            prefer_sentence_boundaries=bool(
+                getattr(self.cfg, "stream_natural_boundaries", False)
+            ),
         )
         backpressure_start = self._tts_worker.backpressure_events
         speech_sequence = 0
@@ -321,13 +383,16 @@ class StreamingResponseRuntime:
 
         try:
             self.emit(handle, StreamEventType.LLM_REQUEST_STARTED)
-            for token in self.generator.generate_stream(
+            token_stream = self.generator.generate_stream(
                 user_text,
                 emotion,
                 history,
                 turn_id=handle.turn_id,
-            ):
-                self._raise_if_cancelled(handle)
+            )
+            pending_diagnostics: Dict[str, Any] = {}
+
+            def handle_token(token: Any) -> None:
+                nonlocal pending_diagnostics
                 if token.text:
                     raw_parts.append(token.text)
                     self.emit(
@@ -340,6 +405,100 @@ class StreamingResponseRuntime:
                     preview = chunker.peek_pending_hard_boundary()
                     if preview is not None:
                         queue_hard_boundary_preview(preview)
+                if getattr(token, "is_final", False) and not pending_diagnostics:
+                    # Collect the first valid final report, but do not call a
+                    # potentially slow sink before flushing pending text.
+                    pending_diagnostics = sanitize_llm_diagnostics(
+                        getattr(token, "diagnostics", None)
+                    )
+
+            # The bridge is only needed where a deadline can expire while the
+            # backend is idle (natural boundaries). The legacy comma path keeps
+            # the original synchronous consumption on this caller thread.
+            # Note: ``generate_stream`` is *called* here on the caller thread;
+            # only the generator body, its iteration and the final close run on
+            # the reader thread.
+            if not bool(getattr(chunker, "prefer_sentence_boundaries", False)):
+                try:
+                    for token in token_stream:
+                        self._raise_if_cancelled(handle)
+                        handle_token(token)
+                finally:
+                    # Caller-thread ownership: this thread closes the source, so
+                    # the legacy iteration/close contract is unchanged.
+                    _close_token_source(token_stream)
+            else:
+                token_queue: "queue.Queue[Any]" = queue.Queue(
+                    maxsize=_TOKEN_QUEUE_CAPACITY
+                )
+                stop_reader = threading.Event()
+                reader_done = threading.Event()
+                source_claim_lock = threading.Lock()
+                source_claimed = False
+
+                def claim_source() -> bool:
+                    nonlocal source_claimed
+                    with source_claim_lock:
+                        if source_claimed:
+                            return False
+                        source_claimed = True
+                        return True
+
+                def run_reader() -> None:
+                    if claim_source():
+                        _pump_tokens(token_stream, token_queue, stop_reader, reader_done)
+                    else:
+                        # Startup cleanup claimed the unstarted resource first.
+                        reader_done.set()
+
+                reader = None
+                try:
+                    reader = threading.Thread(
+                        target=run_reader,
+                        name="srtp-streaming-llm-reader",
+                        daemon=True,
+                    )
+                    reader.start()
+                except BaseException:
+                    stop_reader.set()
+                    # start() can be interrupted after spawning its thread. An
+                    # atomic claim prevents the caller from closing a resource
+                    # that the reader already began iterating.
+                    if claim_source():
+                        _close_token_source(token_stream)
+                    elif reader is not None:
+                        reader.join(timeout=0.1)
+                    raise
+                idle_slice = max(
+                    0.005, min(0.05, self.cfg.stream_sentence_max_wait_seconds / 4.0)
+                )
+                try:
+                    while True:
+                        self._raise_if_cancelled(handle)
+                        try:
+                            item = token_queue.get(timeout=idle_slice)
+                        except queue.Empty:
+                            # Token idle: release whatever the existing deadline
+                            # already considers due, with no extra LLM request.
+                            for sentence in chunker.flush_due():
+                                queue_sentence(sentence)
+                            preview = chunker.peek_pending_hard_boundary()
+                            if preview is not None:
+                                queue_hard_boundary_preview(preview)
+                            if reader_done.is_set() and token_queue.empty():
+                                break
+                            continue
+                        if item is _TOKEN_STREAM_END:
+                            break
+                        if isinstance(item, BaseException):
+                            raise item
+                        handle_token(item)
+                finally:
+                    # Bounded and short: cancellation must not wait for a gated
+                    # backend. The reader still owns closing the source, so this
+                    # never closes a generator from another thread.
+                    stop_reader.set()
+                    reader.join(timeout=0.1)
 
             reply_text = "".join(raw_parts)
             if not reply_text.strip():
@@ -350,6 +509,11 @@ class StreamingResponseRuntime:
                 raise RuntimeError("Sentence chunks do not reconstruct the final reply text")
             if speech_sequence == 0:
                 raise RuntimeError("Streaming LLM produced no TTS-speakable reply text")
+
+            if pending_diagnostics:
+                # A reply without punctuation is now already queued for TTS;
+                # diagnostics-sink latency cannot hold its first speech back.
+                self.emit(handle, StreamEventType.LLM_DIAGNOSTICS, pending_diagnostics)
 
             self._tts_worker.join()
             self._raise_if_cancelled(handle)
@@ -420,15 +584,52 @@ class StreamingResponseRuntime:
     def tts_backpressure_events(self) -> int:
         return self._tts_worker.backpressure_events
 
+    def warmup_tts(self) -> bool:
+        """Warm the owned Piper session once, before the first Listening turn.
+
+        Allowed only while the runtime is open and no turn is active; it uses
+        the factory-owned adapter and never the caller's shared adapter. A
+        missing warmup capability reports False instead of raising.
+        """
+
+        with self._shutdown_lock:
+            if self._closed:
+                raise RuntimeError("StreamingResponseRuntime is closed")
+            if self.controller.active_turn_id is not None:
+                raise RuntimeError("Cannot warm up during an active turn")
+            if self.tts is self._caller_tts:
+                return False
+            warmup = getattr(self.tts, "warmup", None)
+            if not callable(warmup):
+                return False
+            return bool(warmup())
+
     def close(self, *, drain: bool = False) -> None:
-        if self._closed:
-            return
-        self.cancel_current(reason="runtime_closed")
-        self._tts_worker.close(drain=drain)
-        self._closed = True
-        with self._archive_lock:
-            self._audio_by_turn.clear()
-            self._lip_sync_by_turn.clear()
+        """Reject new turns, but retain owned resources until workers stop.
+
+        A worker timeout is retryable even if its thread finishes before the
+        retry: closed-to-new-work and fully-released are different states.
+        """
+        with self._shutdown_lock:
+            if self._shutdown_complete:
+                return
+            self._closed = True
+            try:
+                self.cancel_current(reason="runtime_closed")
+            finally:
+                try:
+                    self._tts_worker.close(drain=drain)
+                finally:
+                    # close() can time out while synthesis holds the Piper
+                    # session lock. Calling adapter.close() then would extend
+                    # shutdown to the full synthesis timeout (or invalidate an
+                    # arbitrary owned synthesizer still in use).
+                    if not self._tts_worker.is_alive:
+                        self._release_owned_resource()
+                        self._shutdown_complete = True
+                        with self._archive_lock:
+                            self._audio_by_turn.clear()
+                            self._lip_sync_by_turn.clear()
 
     def _submit_sentence(self, handle: TurnHandle, sentence: TextChunk) -> None:
         self._raise_if_cancelled(handle)
@@ -528,6 +729,7 @@ def capture_streaming_microphone(
         asr,
         sample_rate=cfg.sample_rate,
         temp_parent=cfg.output_dir,
+        prefer_in_memory=bool(getattr(cfg, "stream_asr_in_memory", True)),
     )
     asr_session = IncrementalASRSession(
         transcriber,
@@ -583,12 +785,17 @@ def capture_streaming_microphone(
                         completed_pcm16 = final_update.completed_pcm16
                     break
                 now = monotonic()
+                partials_enabled = getattr(cfg, "stream_asr_partials_enabled", True)
                 if (
-                    partial_future is None
+                    partials_enabled
+                    and partial_future is None
                     and collector.partial_ready
                     and now - last_partial_submit
                     >= cfg.stream_asr_partial_interval_seconds
                 ):
+                    # Preview submission only: with previews disabled the PCM
+                    # snapshot is never read and no worker task is created, so
+                    # the endpoint and the final decode are untouched.
                     partial_future = executor.submit(
                         asr_session.maybe_partial,
                         collector.pcm16,
@@ -616,6 +823,71 @@ def capture_streaming_microphone(
         {"text": final.text, "asr_sequence": final.sequence_id},
     )
     return final.text
+
+
+_TOKEN_QUEUE_CAPACITY = 4
+_TOKEN_STREAM_END = object()
+
+
+def _close_token_source(source: Any) -> None:
+    """Close a token source once, never replacing a cancellation or failure."""
+
+    close_source = getattr(source, "close", None)
+    if callable(close_source):
+        try:
+            close_source()
+        except Exception:
+            pass
+
+
+def _pump_tokens(
+    source: Any,
+    target: "queue.Queue[Any]",
+    stop_event: threading.Event,
+    done_event: threading.Event,
+) -> None:
+    """Own iteration of one LLM token source, bounded, on a single thread.
+
+    The generator body is executed, iterated **and closed** on this thread only,
+    so no other thread ever finalizes a running generator (the ``generate_stream``
+    call itself happens on the caller). The queue is bounded, so a stalled
+    consumer stops the reader instead of prefetching the whole reply, and
+    ``stop_event`` lets the consumer stop it promptly. A backend read that is
+    blocked inside the transport cannot be force-killed; it ends through the
+    HTTP read timeout that transport already applies, so a stopped reader may
+    outlive the turn. Errors are handed to the consumer through the queue and
+    are never swallowed here.
+    """
+
+    try:
+        iterator = iter(source)
+        while not stop_event.is_set():
+            try:
+                token = next(iterator)
+            except StopIteration:
+                break
+            while not stop_event.is_set():
+                try:
+                    target.put(token, timeout=0.05)
+                    break
+                except queue.Full:
+                    continue
+    except BaseException as exc:  # delivered to the consumer, never swallowed
+        while not stop_event.is_set():
+            try:
+                target.put(exc, timeout=0.05)
+                break
+            except queue.Full:
+                continue
+    finally:
+        _close_token_source(source)
+        if not stop_event.is_set():
+            try:
+                target.put(_TOKEN_STREAM_END, timeout=0.05)
+            except queue.Full:
+                # done_event also lets the consumer detect EOF after draining.
+                pass
+        done_event.set()
 
 
 def _write_combined_wav(path: Path, chunks: Iterable[AudioChunk]) -> None:

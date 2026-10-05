@@ -313,7 +313,14 @@ class StreamingUtteranceCollector:
 
 
 class PCM16ASRTranscriber:
-    """Adapt the existing whole-WAV ASR implementation to PCM snapshots."""
+    """Adapt the whole-WAV ASR implementation to PCM snapshots.
+
+    Memory-first: when ``prefer_in_memory`` is enabled and the adapter exposes
+    ``transcribe_pcm16``, the PCM16 bytes are handed to the model directly, so
+    no temporary WAV is written, read back or decoded again. Any unsupported
+    rate or backend (``None``), a disabled switch, or a missing hook keeps the
+    original temporary-WAV fallback with its existing cleanup.
+    """
 
     def __init__(
         self,
@@ -321,14 +328,28 @@ class PCM16ASRTranscriber:
         *,
         sample_rate: int = 16000,
         temp_parent: Path | None = None,
+        prefer_in_memory: bool = True,
     ) -> None:
         self.adapter = adapter
         self.sample_rate = sample_rate
         self.temp_parent = temp_parent
+        self.prefer_in_memory = bool(prefer_in_memory)
 
     def __call__(self, pcm16: bytes) -> str:
         if not pcm16:
             return ""
+        if self.prefer_in_memory:
+            hook = getattr(self.adapter, "transcribe_pcm16", None)
+            if callable(hook):
+                result = hook(pcm16, sample_rate=self.sample_rate)
+                if result is not None:
+                    # An empty string is a valid transcript, not a fallback.
+                    if not isinstance(result, str):
+                        raise TypeError(
+                            "transcribe_pcm16 must return str or None, "
+                            f"got {type(result).__name__}"
+                        )
+                    return result
         if self.temp_parent is not None:
             self.temp_parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(
