@@ -29,6 +29,15 @@ FAKE_PIPER = textwrap.dedent(
     """
     import json, os, struct, sys, time, wave
 
+    # Speak the verified real-Piper contract (UTF-8 JSON in, UTF-8 path out)
+    # regardless of the host locale: without this the child inherits a legacy
+    # code page (for example GBK) and corrupts CJK text or paths. The fixture
+    # must not rely on the test runner forcing PYTHONIOENCODING/PYTHONUTF8.
+    for _stream_name in ("stdin", "stdout", "stderr"):
+        _reconfigure = getattr(getattr(sys, _stream_name), "reconfigure", None)
+        if _reconfigure is not None:
+            _reconfigure(encoding="utf-8", errors="strict")
+
     MODE = os.environ.get("FAKE_PIPER_MODE", "ok")
     DELAY = float(os.environ.get("FAKE_PIPER_DELAY", "0"))
     EARLY_ACK = os.environ.get("FAKE_PIPER_EARLY_ACK", "0") == "1"
@@ -118,6 +127,36 @@ def fake_env(tmp_path, monkeypatch):
         return _cfg(tmp_path, model, **cfg_overrides), prefix
 
     return build
+
+
+@pytest.mark.parametrize("child_encoding", ["gbk", "cp1252"])
+def test_cjk_protocol_survives_a_legacy_child_locale(fake_env, tmp_path, child_encoding):
+    """UTF-8 protocol must hold even when the child inherits a legacy locale.
+
+    ``PYTHONUTF8=0`` plus a legacy ``PYTHONIOENCODING`` reproduces the real
+    failure mode: the child's stdio would be encoded with the host code page, so
+    a CJK second sentence or a CJK output path raised a surrogate encoding error.
+    """
+
+    cfg, prefix = fake_env({"PYTHONUTF8": "0", "PYTHONIOENCODING": child_encoding})
+    session = _session(cfg, prefix)
+    first = "第一句很简单。"
+    second = "第二句包含换行\n以及中文标点，结尾也要完整。"
+    out_wav = tmp_path / "输出 音频.wav"
+    try:
+        session.synthesize(first, tmp_path / "first.wav")
+        reply = session.synthesize(second, out_wav)
+    finally:
+        session.close()
+
+    assert reply.output_path == out_wav.resolve()
+    expected_frames = 160 + len(second.encode("utf-8")) * 8
+    assert reply.frames == expected_frames
+    with wave.open(str(out_wav), "rb") as wav:
+        assert wav.getnchannels() == 1
+        assert wav.getsampwidth() == 2
+        assert wav.getframerate() == 22050
+        assert wav.getnframes() == expected_frames
 
 
 def _wav_frames(path: Path) -> int:
