@@ -197,7 +197,7 @@ SenseVoice 初始化使用本地模型、`disable_update=True` 和 `disable_pbar
 | --- | --- | --- |
 | `LLM_BACKEND` | `ollama` | 使用 `mock`、`ollama` 或 `lmstudio` |
 | `LLM_MODEL` | `qwen3:4b-instruct` | 本地运行时中的精确模型标签 |
-| `LLM_OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama 服务基址 |
+| `LLM_OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama 服务基址；本机默认使用 IPv4，避免 localhost 连接回退等待；自定义地址保持不变 |
 | `LLM_OLLAMA_CHAT_URL` | 未设置 | 可选自定义聊天 endpoint；默认从 Base URL 派生 `/api/chat` |
 | `LLM_LMSTUDIO_BASE_URL` | `http://localhost:1234` | LM Studio 服务基址 |
 | `LLM_LMSTUDIO_CHAT_URL` | 未设置 | 可选自定义 endpoint；默认派生 `/v1/chat/completions` |

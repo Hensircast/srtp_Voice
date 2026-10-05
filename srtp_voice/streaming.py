@@ -232,6 +232,9 @@ class TurnTiming:
         add("vad_duration_ms", "vad_started", "vad_stopped")
         add("asr_first_partial_ms", "vad_started", "asr_first_partial")
         add("asr_final_ms", "vad_stopped", "asr_final")
+        add("post_asr_setup_ms", "asr_final", "llm_request_started")
+        add("endpoint_to_first_audio_ms", "vad_stopped", "first_audio_chunk_ready")
+        add("endpoint_to_playback_ms", "vad_stopped", "playback_started")
         add("llm_first_token_ms", "llm_request_started", "llm_first_token")
         add("first_sentence_ms", "llm_request_started", "first_sentence_ready")
         add("tts_first_chunk_ms", "first_sentence_ready", "first_audio_chunk_ready")
@@ -312,6 +315,11 @@ class LatencyTracker:
                     "max": round(max(sample), 3),
                 }
             return result
+
+    def history(self) -> list[Dict[str, Any]]:
+        """Bounded chronological timing-only history, independent of audio events."""
+        with self._lock:
+            return [snapshot.to_dict() for snapshot in self._completed]
 
 
 _SENTENCE_HARD_PUNCTUATION = frozenset("。！？；….!?;")

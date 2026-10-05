@@ -190,6 +190,9 @@ class StreamingTurnController:
     def latency_summary(self) -> Dict[str, Dict[str, float | int]]:
         return self._tracker.summary()
 
+    def latency_history(self) -> list[Dict[str, Any]]:
+        return self._tracker.history()
+
     @property
     def last_turn_snapshot(self) -> TurnTimingSnapshot | None:
         with self._lock:
@@ -556,6 +559,8 @@ def capture_streaming_microphone(
                 update = collector.feed(frame)
                 if update.vad_started:
                     runtime.emit(handle, StreamEventType.VAD_STARTED)
+                # Harvest already-completed work before publishing the endpoint;
+                # only NEW partial scheduling belongs after terminal checks.
                 if partial_future is not None and partial_future.done():
                     partial = partial_future.result()
                     partial_future = None
@@ -565,18 +570,8 @@ def capture_streaming_microphone(
                             StreamEventType.ASR_PARTIAL,
                             {"text": partial.text, "asr_sequence": partial.sequence_id},
                         )
-                now = monotonic()
-                if (
-                    collector.pcm16
-                    and partial_future is None
-                    and now - last_partial_submit
-                    >= cfg.stream_asr_partial_interval_seconds
-                ):
-                    partial_future = executor.submit(
-                        asr_session.maybe_partial,
-                        collector.pcm16,
-                    )
-                    last_partial_submit = now
+                # Endpoint handling must precede partial scheduling: a new
+                # snapshot here would delay final ASR by a full extra decode.
                 if update.vad_stopped:
                     runtime.emit(handle, StreamEventType.VAD_STOPPED)
                     completed_pcm16 = update.completed_pcm16
@@ -587,6 +582,18 @@ def capture_streaming_microphone(
                         runtime.emit(handle, StreamEventType.VAD_STOPPED)
                         completed_pcm16 = final_update.completed_pcm16
                     break
+                now = monotonic()
+                if (
+                    partial_future is None
+                    and collector.partial_ready
+                    and now - last_partial_submit
+                    >= cfg.stream_asr_partial_interval_seconds
+                ):
+                    partial_future = executor.submit(
+                        asr_session.maybe_partial,
+                        collector.pcm16,
+                    )
+                    last_partial_submit = now
 
         if partial_future is not None:
             partial = partial_future.result()

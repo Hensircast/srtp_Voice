@@ -103,8 +103,10 @@ class AppConfig:
     # LLM uses local runtimes only. Ollama is the default runtime.
     llm_backend: str = "ollama"  # mock / ollama / lmstudio
     llm_model: str = "qwen3:4b-instruct"
-    llm_ollama_base_url: str = "http://localhost:11434"
-    llm_ollama_chat_url: str = "http://localhost:11434/api/chat"
+    # Avoid localhost IPv6 connection fallback delays on IPv4-only servers.
+    # Explicit remote/IPv6 endpoints from the environment remain unchanged.
+    llm_ollama_base_url: str = "http://127.0.0.1:11434"
+    llm_ollama_chat_url: str = "http://127.0.0.1:11434/api/chat"
     llm_lmstudio_base_url: str = "http://localhost:1234"
     llm_lmstudio_chat_url: str = "http://localhost:1234/v1/chat/completions"
     llm_fallback_to_mock: bool = False
@@ -163,7 +165,7 @@ class AppConfig:
             project_root = Path(__file__).resolve().parents[1]
             load_dotenv(project_root / ".env")
 
-        ollama_base_url = env_text("LLM_OLLAMA_BASE_URL", "http://localhost:11434")
+        ollama_base_url = env_text("LLM_OLLAMA_BASE_URL", "http://127.0.0.1:11434")
         ollama_chat_url = env_text("LLM_OLLAMA_CHAT_URL") or derive_url(ollama_base_url, "/api/chat")
         lmstudio_base_url = env_text("LLM_LMSTUDIO_BASE_URL", "http://localhost:1234")
         lmstudio_chat_url = env_text("LLM_LMSTUDIO_CHAT_URL") or derive_url(

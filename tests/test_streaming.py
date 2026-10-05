@@ -151,6 +151,9 @@ def test_turn_timing_records_first_occurrence_and_latency_boundaries() -> None:
         "vad_duration_ms": 300.0,
         "asr_first_partial_ms": 100.0,
         "asr_final_ms": 100.0,
+        "post_asr_setup_ms": 100.0,
+        "endpoint_to_first_audio_ms": 800.0,
+        "endpoint_to_playback_ms": 900.0,
         "llm_first_token_ms": 100.0,
         "first_sentence_ms": 300.0,
         "tts_first_chunk_ms": 300.0,
@@ -218,6 +221,13 @@ def test_latency_tracker_uses_a_bounded_rolling_sample_window() -> None:
         tracker.finish_turn(turn_id)
 
     assert tracker.completed_turns == 3
+    history = tracker.history()
+    assert [item["turn_id"] for item in history] == ["turn-2", "turn-3"]
+    assert all(set(item) == {"turn_id", "marks", "latencies_ms"} for item in history)
+    history[0]["marks"].clear()
+    history[0]["latencies_ms"].clear()
+    assert tracker.history()[0]["marks"]["turn_started"] == 1.0
+    assert tracker.history()[0]["latencies_ms"]["turn_total_ms"] == 2.0
     assert tracker.summary()["turn_total_ms"] == {
         "count": 2,
         "min": 2.0,
