@@ -321,6 +321,10 @@ _ENDPOINT_KEYS = frozenset({
     "llm_ollama_base_url", "llm_ollama_chat_url",
     "llm_lmstudio_base_url", "llm_lmstudio_chat_url",
 })
+_PATH_CONFIG_KEYS = frozenset({
+    "tts_piper_model", "tts_piper_exe", "tts_piper_config",
+    "tts_piper_espeak_data", "ser_model",
+})
 
 
 def _project_relative_identifier(value: Path) -> str:
@@ -385,6 +389,13 @@ def _endpoint_identifier(value: str) -> str:
 
 
 def _safe_config_value(value: Any, *, key: str | None = None) -> Any:
+    if key in _PATH_CONFIG_KEYS and value is not None:
+        if isinstance(value, str):
+            if _PATH_IDENTITY.fullmatch(value):
+                return value
+            return _project_relative_identifier(Path(value))
+        if not isinstance(value, Path):
+            return "<redacted>"
     if key in _ENDPOINT_KEYS:
         return _endpoint_identifier(value) if isinstance(value, str) else "<redacted>"
     if isinstance(value, Path):
