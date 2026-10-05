@@ -326,7 +326,12 @@ def describe_path(
         except OSError:
             return {"location": "unresolved", "exists": None, "bytes": None, "probed": False}
         if resolved == root or root in resolved.parents:
-            location = resolved.relative_to(root).as_posix()
+            # Reuse the component sanitizer: a POSIX-legal filename may contain
+            # Windows separators, a drive letter or a UNC prefix, and none of
+            # those may leak a username or a share name into the report.
+            from .workbench_latency import _safe_relative_location
+
+            location = _safe_relative_location(resolved, root) or "<outside-project>"
         else:
             location = "<outside-project>"
     path = candidate

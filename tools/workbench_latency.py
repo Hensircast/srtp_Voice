@@ -77,14 +77,51 @@ CONFIG_KEYS: tuple[str, ...] = (
     "stream_asr_in_memory",
     "stream_asr_partials_enabled",
     "stream_llm_reuse_connections",
+    # Latency-affecting, non-sensitive settings added by the PR24 review fix.
+    "asr_cpu_threads",
+    "asr_beam_size",
+    "asr_device",
+    "asr_compute_type",
+    "asr_language",
+    "asr_vad_filter",
+    "asr_min_silence_ms",
+    "asr_condition_on_previous_text",
+    "tts_voice",
+    "tts_piper_model",
+    "tts_piper_config",
+    "tts_piper_use_json_input",
+    "tts_piper_timeout_seconds",
+    "tts_piper_extra_args",
+    "tts_piper_espeak_data",
+    "stream_sentence_max_wait_seconds",
+    "stream_audio_queue_size",
     "stream_tts_queue_size",
     "stream_sentence_min_chars",
     "stream_sentence_max_chars",
-    "stream_sentence_max_wait_seconds",
+    "stream_asr_partial_interval_seconds",
+    "stream_barge_in_enabled",
+    "min_speech_ms",
+    "pre_roll_ms",
+    "vad_calibration_ms",
+    "vad_threshold",
+    "vad_noise_multiplier",
+    "vad_release_ratio",
+    "llm_temperature",
+    "llm_context_tokens",
+    "llm_timeout_seconds",
+    "llm_fallback_to_mock",
+    "llm_max_tokens",
+    "max_history_turns",
+    "ser_model",
+    "ser_device",
+    "ser_language",
+    "ser_fallback_to_heuristic",
+    "emotion_smooth_alpha",
+    "emotion_decay_half_life_seconds",
+    "emotion_max_step",
 )
 
-# Export a transport-neutral name; keep the existing strict URL redaction
-# contract while still including this tuning option in provenance/fingerprints.
+# Export a transport-neutral name without exposing the HTTP endpoint.
 CONFIG_ATTRIBUTES = {"stream_llm_reuse_connections": "stream_llm_reuse_http"}
 
 _SAFE_TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -284,6 +321,141 @@ def _safe_config_value(value: Any) -> Any:
     return "<redacted>"
 
 
+_GIT_HEAD = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})")
+_CONFIG_FINGERPRINT = re.compile(r"[0-9a-fA-F]{64}")
+# ASCII digits only, optional patch, optional standard a/b/rc pre-release:
+# 3.11, 3.12.10 and 3.14.0rc1 pass, "3.12<arbitrary text>" does not.
+_PYTHON_VERSION = re.compile(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:(?:a|b|rc)[0-9]+)?")
+_SAFE_OS_NAMES = {"windows": "Windows", "linux": "Linux", "darwin": "Darwin"}
+# Settings that demonstrably change observed latency, kept for documentation and
+# the own gate; the authoritative declaration stays CONFIG_KEYS above.
+_LATENCY_SETTING_KEYS: tuple[str, ...] = (
+    "asr_cpu_threads",
+    "asr_beam_size",
+    "asr_device",
+    "asr_compute_type",
+    "tts_voice",
+    "stream_sentence_max_wait_seconds",
+    "min_speech_ms",
+    "vad_threshold",
+    "llm_max_tokens",
+    "max_history_turns",
+)
+# Only these keys are legitimately absent in a real recording configuration.
+_OPTIONAL_NONE_KEYS = frozenset(
+    {"ser_model", "tts_piper_config", "tts_piper_extra_args", "tts_piper_espeak_data"}
+)
+_RECORDING_CONTEXT_KEYS = frozenset(
+    {"git_head", "config_fingerprint", "config", "python", "os", "label"}
+)
+
+
+def _safe_recording_config_value(key: str, value: Any) -> Any:
+    """Do not export free text supplied in a numeric or boolean setting."""
+    default = getattr(AppConfig(), CONFIG_ATTRIBUTES.get(key, key), None)
+    if isinstance(default, bool):
+        if type(value) is not bool:
+            return None
+    elif isinstance(default, int):
+        if type(value) is not int:
+            return None
+    elif isinstance(default, float):
+        if type(value) not in (int, float) or not math.isfinite(value):
+            return None
+    elif value is not None and not isinstance(value, (str, Path)):
+        return "<redacted>"
+    return _safe_config_value(value)
+
+
+def _config_is_known(config_view: Mapping[str, Any]) -> bool:
+    """Whether every exported value is a real, measurable setting.
+
+    A key that is present but unknown (``None`` outside the genuinely optional
+    set, a ``<redacted>`` projection, or a non-finite number) means the
+    configuration cannot be treated as recorded evidence.
+    """
+
+    for key, value in config_view.items():
+        if value is None:
+            if key not in _OPTIONAL_NONE_KEYS:
+                return False
+            continue
+        if value == "<redacted>":
+            return False
+        if isinstance(value, float) and not math.isfinite(value):
+            return False
+    return True
+
+
+def _sanitize_recording_context(value: Any) -> dict[str, Any] | None:
+    """Export-boundary cleaner for a caller-supplied recording context.
+
+    Unknown keys are dropped instead of copied, every source string goes
+    through the same validators as the file loader, and a fingerprint is only
+    kept for a complete and known configuration. No path, URL or secret can
+    travel through this parameter.
+    """
+
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise BaselineError("recording_context must be an object")
+    config = value.get("config")
+    config_view: dict[str, Any] = {}
+    if isinstance(config, Mapping):
+        config_view = {
+            key: _safe_recording_config_value(key, config.get(key))
+            for key in CONFIG_KEYS
+            if key in config
+        }
+    complete = all(key in config_view for key in CONFIG_KEYS) and _config_is_known(
+        config_view
+    )
+    provided = value.get("config_fingerprint")
+    fingerprint: str | None = None
+    if complete:
+        expected = _fingerprint(config_view)
+        if provided is None or (
+            _valid_fingerprint(provided) and provided == expected
+        ):
+            fingerprint = expected
+    cleaned: dict[str, Any] = {
+        "git_head": _valid_git_head(value.get("git_head")),
+        "config_fingerprint": fingerprint,
+        "config": config_view,
+        "python": _valid_python_version(value.get("python")),
+        "os": _valid_os_name(value.get("os")),
+        "label": (
+            _safe_config_value(value.get("label"))
+            if isinstance(value.get("label"), str)
+            else None
+        ),
+    }
+    return {key: cleaned[key] for key in cleaned if key in _RECORDING_CONTEXT_KEYS}
+
+
+def _valid_git_head(value: Any) -> str | None:
+    """40/64 hex only; anything else becomes unknown and is never echoed."""
+
+    return value if isinstance(value, str) and _GIT_HEAD.fullmatch(value) else None
+
+
+def _valid_fingerprint(value: Any) -> bool:
+    return isinstance(value, str) and bool(_CONFIG_FINGERPRINT.fullmatch(value))
+
+
+def _valid_python_version(value: Any) -> str | None:
+    return value if isinstance(value, str) and _PYTHON_VERSION.fullmatch(value) else None
+
+
+def _valid_os_name(value: Any) -> str | None:
+    """Only the identifiers this project supports; paths and URLs are dropped."""
+
+    if not isinstance(value, str):
+        return None
+    return _SAFE_OS_NAMES.get(value.strip().lower())
+
+
 def _config_view(cfg: AppConfig) -> dict[str, Any]:
     return {
         key: _safe_config_value(getattr(cfg, CONFIG_ATTRIBUTES.get(key, key), None))
@@ -477,6 +649,19 @@ def capture_baseline(
             ignored_turn_keys += ignored_count
             cleaned["group"] = "first_observed" if index == 0 else "subsequent"
             turns_out.append(cleaned)
+        if not any(turn.get("latencies_ms") for turn in turns_out):
+            # Timing evidence needs at least one retained latencies_ms entry. A
+            # cancelled or partial record must never be exported as a timing
+            # group of zero milliseconds, and the declared group counts have to
+            # stay consistent with the records, so they are not exported here.
+            dropped = len(turns_out)
+            turns_out = []
+            per_turn = False
+            notes.append(
+                "per_turn_unavailable: "
+                f"{dropped} retained turn record(s) carried no usable "
+                "latencies_ms entry and were not exported as timing evidence"
+            )
 
     if payload.get("last_turn") is not None:
         notes.append("last_turn present in source but not used as per-turn evidence")
@@ -491,7 +676,7 @@ def capture_baseline(
         "label": safe_label,
         "source": source_info,
         "capture_context": capture,
-        "recording_context": dict(recording_context) if recording_context else None,
+        "recording_context": _sanitize_recording_context(recording_context),
         "config": capture["config"],
         "config_fingerprint": capture["config_fingerprint"],
         "summary": summary,
@@ -848,10 +1033,8 @@ def load_recording_metadata(path: Path) -> dict[str, Any]:
     config = payload.get("config")
     if not isinstance(config, Mapping):
         config = {}
-    config_view = {key: _safe_config_value(config.get(key)) for key in CONFIG_KEYS if key in config}
-    fingerprint = payload.get("config_fingerprint")
-    if not isinstance(fingerprint, str) or not fingerprint:
-        fingerprint = _fingerprint(config_view) if config_view else None
+    config_view = {key: _safe_recording_config_value(key, config.get(key)) for key in CONFIG_KEYS if key in config}
+    provided_fingerprint = payload.get("config_fingerprint")
     candidate = payload.get("capture_context")
     if isinstance(candidate, Mapping):
         git = candidate.get("git")
@@ -859,24 +1042,38 @@ def load_recording_metadata(path: Path) -> dict[str, Any]:
             git_head = git.get("head")
         if not config_view and isinstance(candidate.get("config"), Mapping):
             config_view = {
-                key: _safe_config_value(candidate["config"].get(key))
+                key: _safe_recording_config_value(key, candidate["config"].get(key))
                 for key in CONFIG_KEYS
                 if key in candidate["config"]
             }
-        if not fingerprint:
+        if not isinstance(provided_fingerprint, str) or not provided_fingerprint:
             value = candidate.get("config_fingerprint")
-            fingerprint = value if isinstance(value, str) and value else None
+            if isinstance(value, str) and value:
+                provided_fingerprint = value
     python = payload.get("python")
     os_name = payload.get("os")
     if isinstance(candidate, Mapping):
         python = python or candidate.get("python")
         os_name = os_name or candidate.get("os")
+
+    # A fingerprint is only meaningful for a complete configuration whose values
+    # are actually known, and it is recomputed locally: an opaque string cannot
+    # bypass the completeness check, a key that is present but unknown blocks
+    # the fingerprint, and a mismatching value is reported as unknown.
+    fingerprint: str | None = None
+    if all(key in config_view for key in CONFIG_KEYS) and _config_is_known(config_view):
+        expected = _fingerprint(config_view)
+        if provided_fingerprint is None:
+            fingerprint = expected
+        elif _valid_fingerprint(provided_fingerprint) and provided_fingerprint == expected:
+            fingerprint = expected
+
     context: dict[str, Any] = {
-        "git_head": git_head if isinstance(git_head, str) and git_head else None,
+        "git_head": _valid_git_head(git_head),
         "config_fingerprint": fingerprint,
         "config": config_view,
-        "python": python if isinstance(python, str) and python else None,
-        "os": os_name if isinstance(os_name, str) and os_name else None,
+        "python": _valid_python_version(python),
+        "os": _valid_os_name(os_name),
         "label": _safe_config_value(payload.get("label")) if isinstance(payload.get("label"), str) else None,
     }
     if not context["config"] and not context["config_fingerprint"]:
