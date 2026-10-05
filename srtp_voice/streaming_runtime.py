@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import queue
 import threading
 import uuid
 import wave
@@ -389,38 +390,115 @@ class StreamingResponseRuntime:
                 turn_id=handle.turn_id,
             )
             pending_diagnostics: Dict[str, Any] = {}
-            try:
-                for token in token_stream:
-                    self._raise_if_cancelled(handle)
-                    if token.text:
-                        raw_parts.append(token.text)
-                        self.emit(
-                            handle,
-                            StreamEventType.LLM_TOKEN,
-                            {"text": token.text, "token_sequence": token.sequence_id},
-                        )
-                        for sentence in chunker.feed(token.text):
-                            queue_sentence(sentence)
-                        preview = chunker.peek_pending_hard_boundary()
-                        if preview is not None:
-                            queue_hard_boundary_preview(preview)
-                    if getattr(token, "is_final", False) and not pending_diagnostics:
-                        # Collect the first valid final report, but do not call
-                        # a potentially slow sink before flushing pending text.
-                        pending_diagnostics = sanitize_llm_diagnostics(
-                            getattr(token, "diagnostics", None)
-                        )
-            finally:
-                # Normal completion, cancellation and consumption errors all
-                # release the inner HTTP reader instead of leaving it to gc.
-                close_stream = getattr(token_stream, "close", None)
-                if callable(close_stream):
-                    try:
-                        close_stream()
-                    except Exception:
-                        # Cleanup must not replace cancellation or a reader /
-                        # sentence-submission failure with an unrelated error.
-                        pass
+
+            def handle_token(token: Any) -> None:
+                nonlocal pending_diagnostics
+                if token.text:
+                    raw_parts.append(token.text)
+                    self.emit(
+                        handle,
+                        StreamEventType.LLM_TOKEN,
+                        {"text": token.text, "token_sequence": token.sequence_id},
+                    )
+                    for sentence in chunker.feed(token.text):
+                        queue_sentence(sentence)
+                    preview = chunker.peek_pending_hard_boundary()
+                    if preview is not None:
+                        queue_hard_boundary_preview(preview)
+                if getattr(token, "is_final", False) and not pending_diagnostics:
+                    # Collect the first valid final report, but do not call a
+                    # potentially slow sink before flushing pending text.
+                    pending_diagnostics = sanitize_llm_diagnostics(
+                        getattr(token, "diagnostics", None)
+                    )
+
+            # The bridge is only needed where a deadline can expire while the
+            # backend is idle (natural boundaries). The legacy comma path keeps
+            # the original synchronous consumption on this caller thread.
+            # Note: ``generate_stream`` is *called* here on the caller thread;
+            # only the generator body, its iteration and the final close run on
+            # the reader thread.
+            if not bool(getattr(chunker, "prefer_sentence_boundaries", False)):
+                try:
+                    for token in token_stream:
+                        self._raise_if_cancelled(handle)
+                        handle_token(token)
+                finally:
+                    # Caller-thread ownership: this thread closes the source, so
+                    # the legacy iteration/close contract is unchanged.
+                    _close_token_source(token_stream)
+            else:
+                token_queue: "queue.Queue[Any]" = queue.Queue(
+                    maxsize=_TOKEN_QUEUE_CAPACITY
+                )
+                stop_reader = threading.Event()
+                reader_done = threading.Event()
+                source_claim_lock = threading.Lock()
+                source_claimed = False
+
+                def claim_source() -> bool:
+                    nonlocal source_claimed
+                    with source_claim_lock:
+                        if source_claimed:
+                            return False
+                        source_claimed = True
+                        return True
+
+                def run_reader() -> None:
+                    if claim_source():
+                        _pump_tokens(token_stream, token_queue, stop_reader, reader_done)
+                    else:
+                        # Startup cleanup claimed the unstarted resource first.
+                        reader_done.set()
+
+                reader = None
+                try:
+                    reader = threading.Thread(
+                        target=run_reader,
+                        name="srtp-streaming-llm-reader",
+                        daemon=True,
+                    )
+                    reader.start()
+                except BaseException:
+                    stop_reader.set()
+                    # start() can be interrupted after spawning its thread. An
+                    # atomic claim prevents the caller from closing a resource
+                    # that the reader already began iterating.
+                    if claim_source():
+                        _close_token_source(token_stream)
+                    elif reader is not None:
+                        reader.join(timeout=0.1)
+                    raise
+                idle_slice = max(
+                    0.005, min(0.05, self.cfg.stream_sentence_max_wait_seconds / 4.0)
+                )
+                try:
+                    while True:
+                        self._raise_if_cancelled(handle)
+                        try:
+                            item = token_queue.get(timeout=idle_slice)
+                        except queue.Empty:
+                            # Token idle: release whatever the existing deadline
+                            # already considers due, with no extra LLM request.
+                            for sentence in chunker.flush_due():
+                                queue_sentence(sentence)
+                            preview = chunker.peek_pending_hard_boundary()
+                            if preview is not None:
+                                queue_hard_boundary_preview(preview)
+                            if reader_done.is_set() and token_queue.empty():
+                                break
+                            continue
+                        if item is _TOKEN_STREAM_END:
+                            break
+                        if isinstance(item, BaseException):
+                            raise item
+                        handle_token(item)
+                finally:
+                    # Bounded and short: cancellation must not wait for a gated
+                    # backend. The reader still owns closing the source, so this
+                    # never closes a generator from another thread.
+                    stop_reader.set()
+                    reader.join(timeout=0.1)
 
             reply_text = "".join(raw_parts)
             if not reply_text.strip():
@@ -745,6 +823,71 @@ def capture_streaming_microphone(
         {"text": final.text, "asr_sequence": final.sequence_id},
     )
     return final.text
+
+
+_TOKEN_QUEUE_CAPACITY = 4
+_TOKEN_STREAM_END = object()
+
+
+def _close_token_source(source: Any) -> None:
+    """Close a token source once, never replacing a cancellation or failure."""
+
+    close_source = getattr(source, "close", None)
+    if callable(close_source):
+        try:
+            close_source()
+        except Exception:
+            pass
+
+
+def _pump_tokens(
+    source: Any,
+    target: "queue.Queue[Any]",
+    stop_event: threading.Event,
+    done_event: threading.Event,
+) -> None:
+    """Own iteration of one LLM token source, bounded, on a single thread.
+
+    The generator body is executed, iterated **and closed** on this thread only,
+    so no other thread ever finalizes a running generator (the ``generate_stream``
+    call itself happens on the caller). The queue is bounded, so a stalled
+    consumer stops the reader instead of prefetching the whole reply, and
+    ``stop_event`` lets the consumer stop it promptly. A backend read that is
+    blocked inside the transport cannot be force-killed; it ends through the
+    HTTP read timeout that transport already applies, so a stopped reader may
+    outlive the turn. Errors are handed to the consumer through the queue and
+    are never swallowed here.
+    """
+
+    try:
+        iterator = iter(source)
+        while not stop_event.is_set():
+            try:
+                token = next(iterator)
+            except StopIteration:
+                break
+            while not stop_event.is_set():
+                try:
+                    target.put(token, timeout=0.05)
+                    break
+                except queue.Full:
+                    continue
+    except BaseException as exc:  # delivered to the consumer, never swallowed
+        while not stop_event.is_set():
+            try:
+                target.put(exc, timeout=0.05)
+                break
+            except queue.Full:
+                continue
+    finally:
+        _close_token_source(source)
+        if not stop_event.is_set():
+            try:
+                target.put(_TOKEN_STREAM_END, timeout=0.05)
+            except queue.Full:
+                # done_event also lets the consumer detect EOF after draining.
+                pass
+        done_event.set()
 
 
 def _write_combined_wav(path: Path, chunks: Iterable[AudioChunk]) -> None:
