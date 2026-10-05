@@ -42,6 +42,7 @@ def _document() -> dict:
 def test_cli_file_context_is_revalidated_before_any_delta(tmp_path, monkeypatch, mutation):
     current = _document()
     previous = copy.deepcopy(current)
+    monkeypatch.setattr(latency, "PROJECT_ROOT", tmp_path)
     context = previous["recording_context"]
     if mutation == "empty":
         context["config"] = {}
