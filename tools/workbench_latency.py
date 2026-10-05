@@ -159,7 +159,10 @@ def _read_json(path: Path) -> Any:
 def _require_finite(value: Any, where: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise BaselineError(f"{where} must be a number")
-    number = float(value)
+    try:
+        number = float(value)
+    except OverflowError as exc:
+        raise BaselineError(f"{where} must be a finite number") from exc
     if not math.isfinite(number):
         raise BaselineError(f"{where} must be finite")
     return number

@@ -22,7 +22,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, Mapping, Sequence
 
 from .workbench import PROJECT_ROOT, is_within_project, resolve_project_path
@@ -117,7 +117,10 @@ _DENIED_ARG_TOKENS = ("http://", "https://")
 
 def _check_project_path(token: str, base: Path) -> None:
     candidate = Path(token)
-    if candidate.is_absolute():
+    windows = PureWindowsPath(token)
+    if candidate.is_absolute() or windows.drive or windows.root or any(
+        "\\" in part or ":" in part for part in candidate.parts
+    ):
         raise TaskError("task command paths must stay inside the project")
     resolved = (base / candidate).resolve()
     if resolved != base and base not in resolved.parents:
