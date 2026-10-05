@@ -342,6 +342,13 @@ def _project_relative_identifier(value: Path) -> str:
 
     raw = str(value)
     text = raw.replace("\\", "/")
+    windows = PureWindowsPath(raw)
+    if windows.drive and not windows.root:
+        # Drive-relative syntax ("C:private/model") is bound to a per-drive
+        # working directory, so its meaning is not deterministic and it can
+        # never be treated as a comparable source. Reject it before any
+        # resolution on every platform.
+        return "<redacted>"
     if not text or text.startswith("//") or (
         os.name != "nt" and ("\\" in raw or PureWindowsPath(raw).drive)
     ):
@@ -391,7 +398,38 @@ def _endpoint_identifier(value: str) -> str:
     return f"{_ENDPOINT_IDENTITY_PREFIX}{digest}"
 
 
+_ASR_MODEL_KEY = "asr_model"
+# Conservative path-like syntax: a separator, a root or a drive marker. A
+# hub-style remote id such as "Systran/faster-whisper-small" cannot be told
+# apart from a relative directory without probing the filesystem or the
+# network, so it is projected the same way. This identifies the setting only:
+# it is never proof of file existence, file contents or remote provenance, and
+# the value actually handed to the runtime loader is untouched.
+_PATH_LIKE_SYNTAX = re.compile(r"[\\/]|^[A-Za-z]:")
+
+
+def _looks_path_like(value: str) -> bool:
+    text = value.strip()
+    if not text:
+        return False
+    if _PATH_LIKE_SYNTAX.search(text):
+        return True
+    return bool(PureWindowsPath(text).drive) or PurePosixPath(text).is_absolute()
+
+
 def _safe_config_value(value: Any, *, key: str | None = None) -> Any:
+    if key == _ASR_MODEL_KEY and isinstance(value, (str, Path)):
+        text = str(value)
+        if _PATH_IDENTITY.fullmatch(text):
+            # Already an identity token: never hash it a second time, whether it
+            # arrives as a string or as a Path.
+            return text
+        if isinstance(value, str) and not _looks_path_like(text):
+            # Plain catalogue names (small, base, large-v3, tiny.en,
+            # distil-large-v3, ...) stay readable; anything less certain is
+            # unknown.
+            return value if _SAFE_TOKEN.fullmatch(value) else "<redacted>"
+        return _project_relative_identifier(Path(text))
     if key in _PATH_CONFIG_KEYS and value is not None:
         if isinstance(value, str):
             if _PATH_IDENTITY.fullmatch(value):
