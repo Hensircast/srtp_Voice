@@ -1,5 +1,16 @@
 # SRTP 当前工作断点
 
+## 额度保护收口（2026-10-05，优先于下方旧快照）
+
+- 已核实授权：仅本项目完全管理及普通门禁 merge；DeepSeek 主执行，Codex 审查/边界攻关。模型替换仍须用户单独许可。停止新派工与新优化，不兑换额度/付费/无限续跑；最近 Codex 短窗口剩9%、周窗口86%，读数有延迟，恢复先刷新。DeepSeek可靠余额未知，最后原对话44轮613步空闲，不把累计用量当余额。
+- 主目录代码 HEAD baddd13c993d5b1aaa63a56e8cabaf69676a2756 已正常合入 a9bc5ca 工作台修复。默认 full：1172 passed/80.03s/exit0，compileall/pip check均0；证据 outputs/workbench/accessibility-20261005/full-protection-final-5a6af22ad16942398bfa51076f8be572.log。此前远程866798a的双平台CI37288484656成功，不代替下一次推送的精确门禁。当前记录提交/推送及其CI需恢复时核对。
+- PR23已普通合并。PR24远程 a9bc5ca5ce8ed33d760785dc61cfa2653aa9a23c，精确CI37289108336双平台成功；超大JSON数字/跨系统任务路径两条P2已在修复推送和验证后回复4182492712/4182493127并解决。新P2 comment4182409500/thread PRRT_kwDOSvoFtc6o-Hca：path-like ASR_MODEL 未经隐私身份投影，尚未修复；不导出这类私有路径配置，不解决线程、不合并24。
+- PR25仍Draft、基线codex/v1.8-workbench；现有线程无未解决项不等于新HEAD批准。含相同未修复工作台边界；24完成前不改为main/ready，不合并25。最终说明/复审请求及在线结果需核对，不拿旧review冒充最新批准。
+- 验证表述更正：此前三次管理副本“项目外/系统临时根”本地命令未给PYTEST_ADDOPTS的Windows反斜杠正确加引号，被shlex去除，实际生成项目内目录。原通过数量/退出码真实，但不能当本地项目外形状证据；不是机器安装/ACL故障。三个明确归属本轮的目录已可恢复移动至管理副本 outputs/workbench/review8-20261005/recovered-temp/，无删除。修正为前斜杠且加引号后的新独占系统根真实存在：完整750/18.99s、编译/pip检查0；日志 full-actual-outside-89ff89507d90403c82e96471bb3dc22c.log。GitHub Windows/Ubuntu成功证据不受这一本地命令问题影响。
+- 管理副本继续保留 C:/Users/lenovo/.codex/worktrees/v1-8-workbench-review/srtp_Voice 与全部失败/真实模型/临时证据，未归档。主目录和管理副本测试均已退出；最新项目进程检查在沙箱被拒，需批准的只读核查，不按旧PID结束进程。
+- 有效体验改动是可回退 ASR 预览开关，默认1未改用户.env。唯一真实公开音频重放中分题端点到final p50省632.5/39/63ms，六对中位109.5ms且一对回退16ms；不代表全链路、麦克风/扬声器、老人儿童或自然度验收。韵律小收益提案未采纳；真实6–10轮AB复测入口 V1.8_ASR_PREVIEW_POLICY.md。
+- 本轮下载/安装/训练/替换模型/付费0。最近主目录元数据73321文件/2926512368bytes（约2.725GiB）、1读取缺口，下界且后续日志增长；不含既有外部HF缓存及管理副本。恢复：读规则/本节→刷新额度、Git/进程/原dsh→定向复现ASR路径P2、明确普通模型ID与本地路径投影契约→DeepSeek有限修复→独立回归/full/精确双平台CI/复审→仅合格后按24再25顺序普通merge。不要重复已完成实验或闭环线程。
+
 核实：2026-10-05（Asia/Shanghai）。先读 AGENTS.md 与本文件；详细历史按需读 WORK_HISTORY.md、V1.8_NATURAL_VOICE.md 和本轮 run.md，不重新粘贴整个对话。本文件不是模型、虚拟环境、个人数据或服务的完整备份。
 
 ## 最新收口状态（10/05，优先于下方进行时/历史）
