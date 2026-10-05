@@ -1,6 +1,20 @@
 # SRTP 当前工作断点
 
-核实：2026-10-01（Asia/Shanghai）。先读 AGENTS.md 与本文件；详细历史按需读 WORK_HISTORY.md、V1.8_NATURAL_VOICE.md 和本轮 run.md，不重新粘贴整个对话。本文件不是模型、虚拟环境、个人数据或服务的完整备份。
+核实：2026-10-05（Asia/Shanghai）。先读 AGENTS.md 与本文件；详细历史按需读 WORK_HISTORY.md、V1.8_NATURAL_VOICE.md 和本轮 run.md，不重新粘贴整个对话。本文件不是模型、虚拟环境、个人数据或服务的完整备份。
+
+## 本轮恢复（10/05，优先于以下10/01历史快照）
+
+- 用户授权本项目仓库完全管理，包括安全merge；仍遵守AGENTS禁止项及分支保护/CI/Review门禁，不直接写main、不管理员绕过。允许项目内可回退优化，面向老人和儿童，DeepSeek主执行；模型替换须先提供证据/空间/回退方案并取得用户许可。无新下载、安装、训练或付费授权。
+- 当前HEAD1659aeb，起点工作树干净；PR23→24→25三层Draft依赖均OPEN，门禁现场检查中。PR25精确HEAD双平台CI36746339880成功；最终复审5915774072无重大问题，既有五线程已解决，不再记为待返回。
+- Codex额度起点剩99%短窗口/100%周窗口，旧10/01保护已结束。本轮仍执行约10%收缩/7%保护，不为凑阈值无效耗用。DeepSeek可靠剩余额度尚不可读。
+- 原桌面“SRTP 工作台试点读取核验”已恢复，36轮516步且空闲；只复用原对话。离线doctor健康，项目无正在执行的Python/Piper/Ollama进程；在线doctor返回URLError警告，不等于模型丢失，不重装/换模型/自行重复服务。
+- 有限审计任务已在原对话真实投递并完成，37轮526步闲置；audit.md/audit-state.json存在，仅源码推断无设备测量。Codex未采纳重复SILENCE_MS开关及未证实目标人群停顿断言；端点上限已有相关测试，空ASR已有文字提示，原报告保留不伪改。
+- 韵律批已完成但未接受：真实合成输入paired暖态省约28ms，冷import116.311ms；自有targeted101/6.37s，首版1failed/6passed留存。Codex核对后因收益偏小与全局缓存/宽异常/阈值及非相邻并列保护不足，补丁恢复prosody.py到1659aeb，提案diff与新增测试归档保留；decision-prosody.md明确未接受，原助手报告不伪改。未动用户修改/旧断言，非全链路/真人测量。原dsh38轮535步已闲置。
+- 本轮起点本地full992/80.64s/exit0，compileall/pip check0。沙箱基础解释器无法启动，改用批准的原项目venv执行，不改ACL/安装/全局设置。PR23已在精确CI与最终复审5989501229通过后，普通merge40d80ea入main，未删分支/重写历史；main CI37274469160成功。PR24已安全改main基线并ready，最终复审5989499057再次服务错误，未合并；PR25保留原分支，下一ASR批另验收。
+- ASR开关已实现但尚未提交：默认预览兼容，0取消仅显示的partial解码，保持VAD/完整final；Codex独立首轮2failed/8passed（快照缺键、非法值泄漏），DeepSeek已修复来源隐私/快照/.env。自有夹具仍丢帧挂起，Codex10分钟停止原dsh批并局部修正，定向57/2.35s/exit0，完整1021/76.33s/exit0（编译/pip check通过）。原Indentation/BOM/9failed与挂起日志保留，不称预览已默认提速。
+- PR24 ready后的两次真正Review已返回5条新P2（不是仅issue comment），4181444058/63/71及4181480072/79：doctor嵌套路径、全空turn、metadata字符串/配置完整性和关键设置指纹。Codex独立27failed/1passed复现；已创建附着的本项目v1-8-workbench-review隔离树HEAD49bbb6d9，原对话task-review24.md有限派工，主目录不切分支。当前不合并24/25、不resolve未修复线程。
+- 模型首版接线错误/有限源等待已停止，副本留存；Codex接管接口、有限输入、0.8秒间隔/12次AB/BA，经合成门禁后单次有界真实公开Piper+缓存small重放exit0。独立JSON核实12轮完整PCM/final一致、off预览0/final1；分题VAD-stop→ASR-final p50差632.5/39/63ms，paired中位109.5ms，一对回退16ms，非全链路/硬件/人群测量。load5688ms/warmup1578ms单列；RSS null，未证明2GiB目标。decision-asr-model.md与真实日志/失败均留存，默认1/.env不改。
+- DeepSeek主执行PR24隔离修复已有168/4.66s，Codex进一步发现版本正则过宽、只补12字段/未知完整配置与直接mapping导出旁路，原对话review24-followup.md有限7工具/10分钟继续补齐。独立/旧断言不变，未full/CI/提交；旧snapshot缺扩展键应未知而非补假来源。上一批助手承认约22工具超14与覆盖首失败日志（已转录不补造），本批明示缩限。15:43额度剩60%短窗口/94%周窗口，DeepSeek可靠余额仍不可读。
 
 ## 当前目标与边界
 

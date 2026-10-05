@@ -27,6 +27,26 @@ def env_text(name: str, default: str | None = None) -> str | None:
     return stripped if stripped else default
 
 
+def env_asr_partials_enabled() -> bool:
+    """Strict bool for STREAM_ASR_PARTIALS_ENABLED, default True.
+
+    Unlike :func:`env_bool`, an unparsable value is an error instead of being
+    silently treated as False, so a typo cannot quietly disable the previews.
+    """
+
+    value = os.getenv("STREAM_ASR_PARTIALS_ENABLED")
+    if value is None:
+        return True
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(
+        "STREAM_ASR_PARTIALS_ENABLED only accepts 1/true/yes/on or 0/false/no/off"
+    )
+
+
 def env_warmup_enabled() -> bool:
     value = os.getenv("STREAM_TTS_WARMUP")
     if value is not None and value.strip().lower() not in {
@@ -165,6 +185,9 @@ class AppConfig:
     # Optional streaming Piper warmup before the first Listening turn.
     stream_tts_warmup: bool = False
     stream_asr_partial_interval_seconds: float = 0.8
+    # First-response priority: True keeps the incremental partial previews,
+    # False stops submitting them while VAD/collection/final ASR stay intact.
+    stream_asr_partials_enabled: bool = True
     stream_barge_in_enabled: bool = False
 
     # SER: lightweight heuristic by default; SenseVoice uses a local model only.
@@ -265,6 +288,7 @@ class AppConfig:
             stream_asr_partial_interval_seconds=env_bounded_float(
                 "STREAM_ASR_PARTIAL_INTERVAL_SECONDS", 0.8, 0.05, 60.0
             ),
+            stream_asr_partials_enabled=env_asr_partials_enabled(),
             stream_barge_in_enabled=env_bool("STREAM_BARGE_IN_ENABLED", False),
             ser_backend=env_text("SER_BACKEND", "heuristic"),
             ser_model=Path(value) if (value := env_text("SER_MODEL")) else None,

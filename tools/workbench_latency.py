@@ -75,6 +75,7 @@ CONFIG_KEYS: tuple[str, ...] = (
     "stream_natural_boundaries",
     "stream_tts_warmup",
     "stream_asr_in_memory",
+    "stream_asr_partials_enabled",
     "stream_llm_reuse_connections",
     "stream_tts_queue_size",
     "stream_sentence_min_chars",

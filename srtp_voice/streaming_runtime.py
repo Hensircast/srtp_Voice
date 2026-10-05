@@ -707,12 +707,17 @@ def capture_streaming_microphone(
                         completed_pcm16 = final_update.completed_pcm16
                     break
                 now = monotonic()
+                partials_enabled = getattr(cfg, "stream_asr_partials_enabled", True)
                 if (
-                    partial_future is None
+                    partials_enabled
+                    and partial_future is None
                     and collector.partial_ready
                     and now - last_partial_submit
                     >= cfg.stream_asr_partial_interval_seconds
                 ):
+                    # Preview submission only: with previews disabled the PCM
+                    # snapshot is never read and no worker task is created, so
+                    # the endpoint and the final decode are untouched.
                     partial_future = executor.submit(
                         asr_session.maybe_partial,
                         collector.pcm16,
