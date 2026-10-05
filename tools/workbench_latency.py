@@ -18,6 +18,7 @@ import argparse
 import hashlib
 import importlib
 import inspect
+import ipaddress
 import json
 import math
 import os
@@ -28,6 +29,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable, Mapping, Sequence
+from urllib.parse import urlsplit
 
 from srtp_voice.config import AppConfig
 
@@ -67,6 +69,10 @@ CONFIG_KEYS: tuple[str, ...] = (
     "tts_backend",
     "llm_backend",
     "llm_model",
+    "llm_ollama_base_url",
+    "llm_ollama_chat_url",
+    "llm_lmstudio_base_url",
+    "llm_lmstudio_chat_url",
     "frame_ms",
     "silence_ms",
     "max_record_seconds",
@@ -81,6 +87,7 @@ CONFIG_KEYS: tuple[str, ...] = (
     "asr_condition_on_previous_text",
     "tts_voice",
     "tts_piper_model",
+    "tts_piper_exe",
     "tts_piper_config",
     "tts_piper_use_json_input",
     "tts_piper_timeout_seconds",
@@ -287,15 +294,94 @@ def _sanitize_summary(
     return cleaned, unknown
 
 
-def _safe_config_value(value: Any) -> Any:
+_PATH_IDENTITY_PREFIX = "pid1-"
+_ENDPOINT_IDENTITY_PREFIX = "ep1-"
+_PATH_IDENTITY = re.compile(r"pid1-[0-9a-f]{64}")
+_ENDPOINT_IDENTITY = re.compile(r"ep1-[0-9a-f]{64}")
+_ENDPOINT_KEYS = frozenset({
+    "llm_ollama_base_url", "llm_ollama_chat_url",
+    "llm_lmstudio_base_url", "llm_lmstudio_chat_url",
+})
+
+
+def _project_relative_identifier(value: Path) -> str:
+    """Deterministic identity for a project-relative model/config path.
+
+    Two files that share a basename in different directories must not collide,
+    and no plaintext path (least of all a username or share) may be exported.
+    The token is versioned and recognizable, so re-loading an already encoded
+    identity never hashes it twice. Project-external or unsafe paths, including
+    network shares, are unknown instead of being probed.
+    """
+
+    raw = str(value)
+    text = raw.replace("\\", "/")
+    if not text or text.startswith("//") or (
+        os.name != "nt" and ("\\" in raw or PureWindowsPath(raw).drive)
+    ):
+        return "<redacted>"
+    # Pure lexical projection: never resolve/stat a configured path or follow a
+    # symlink into a share. This identifies the setting, not the file contents.
+    base = Path(PROJECT_ROOT)
+    candidate = value if value.is_absolute() else base / value
+    normalized = _safe_relative_location(candidate, base)
+    if normalized is None:
+        return "<redacted>"
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    return f"{_PATH_IDENTITY_PREFIX}{digest}"
+
+
+def _endpoint_identifier(value: str) -> str:
+    """Identity for an http(s) endpoint: scheme/host/port/path only.
+
+    Userinfo, query and fragment are dropped before hashing, so credentials or
+    tokens can never be exported, and the original URL never appears. Anything
+    that is not a usable http(s) endpoint is unknown rather than comparable.
+    """
+
+    if _ENDPOINT_IDENTITY.fullmatch(value):
+        return value
+    try:
+        parsed = urlsplit(value.strip())
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return "<redacted>"
+        # A query can change routing as well as carry credentials. Do not claim
+        # equivalent configurations when its private contents are omitted.
+        if parsed.query or parsed.fragment:
+            return "<redacted>"
+        host = parsed.hostname.lower()
+        if ":" in host:
+            host = f"[{ipaddress.IPv6Address(host).compressed}]"
+        elif not re.fullmatch(r"[a-z0-9.-]{1,253}", host):
+            return "<redacted>"
+        port = parsed.port
+    except ValueError:
+        return "<redacted>"
+    normalized = f"{parsed.scheme}://{host}"
+    if port is not None:
+        normalized += f":{port}"
+    normalized += parsed.path or ""
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    return f"{_ENDPOINT_IDENTITY_PREFIX}{digest}"
+
+
+def _safe_config_value(value: Any, *, key: str | None = None) -> Any:
+    if key in _ENDPOINT_KEYS:
+        return _endpoint_identifier(value) if isinstance(value, str) else "<redacted>"
     if isinstance(value, Path):
-        name = value.name
-        return name if _SAFE_TOKEN.match(name) else "<redacted>"
+        return _project_relative_identifier(value)
     if isinstance(value, bool) or value is None:
         return value
-    if isinstance(value, (int, float)):
+    if isinstance(value, int):
         return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
     if isinstance(value, str):
+        if _PATH_IDENTITY.fullmatch(value) or _ENDPOINT_IDENTITY.fullmatch(value):
+            # Already an identity token: never hash it a second time.
+            return value
+        if "://" in value or value.startswith(("http:", "https:")):
+            return "<redacted>"
         if value.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:[\\/]", value):
             return "<redacted>"
         return value if _SAFE_MODEL.fullmatch(value) else "<redacted>"
@@ -341,11 +427,16 @@ def _safe_recording_config_value(key: str, value: Any) -> Any:
         if type(value) is not int:
             return None
     elif isinstance(default, float):
-        if type(value) not in (int, float) or not math.isfinite(value):
+        if type(value) not in (int, float):
+            return None
+        try:
+            if not math.isfinite(value):
+                return None
+        except OverflowError:
             return None
     elif value is not None and not isinstance(value, (str, Path)):
         return "<redacted>"
-    return _safe_config_value(value)
+    return _safe_config_value(value, key=key)
 
 
 def _config_is_known(config_view: Mapping[str, Any]) -> bool:
@@ -438,7 +529,9 @@ def _valid_os_name(value: Any) -> str | None:
 
 
 def _config_view(cfg: AppConfig) -> dict[str, Any]:
-    return {key: _safe_config_value(getattr(cfg, key, None)) for key in CONFIG_KEYS}
+    return {key: _safe_recording_config_value(
+        key, getattr(cfg, CONFIG_ATTRIBUTES.get(key, key), None)
+    ) for key in CONFIG_KEYS}
 
 
 def _fingerprint(config_view: Mapping[str, Any]) -> str:
@@ -537,13 +630,20 @@ def capture_context(
         except Exception as exc:
             raise BaselineError("project configuration could not be loaded") from exc
     config_view = _config_view(config)
+    raw_git = read_git_head(base) if git is None else git
+    if not isinstance(raw_git, Mapping):
+        raise BaselineError("capture git context must be an object")
+    head = _valid_git_head(raw_git.get("head"))
+    git_view = {"head": head, "available": raw_git.get("available") is True and head is not None}
     return {
-        "git": dict(git) if git is not None else read_git_head(base),
+        "git": git_view,
         "project_version": read_project_version(base),
-        "python": python_version or platform.python_version(),
-        "os": os_name or platform.system(),
+        "python": _valid_python_version(platform.python_version() if python_version is None else python_version),
+        "os": _valid_os_name(platform.system() if os_name is None else os_name),
         "config": config_view,
-        "config_fingerprint": _fingerprint(config_view),
+        "config_fingerprint": (
+            _fingerprint(config_view) if _config_is_known(config_view) else None
+        ),
     }
 
 
@@ -986,7 +1086,10 @@ def resolve_output_path(
 def write_baseline(document: Mapping[str, Any], path: Path) -> None:
     """Write atomically with exclusive creation to avoid overwrite races."""
 
-    payload = json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    try:
+        payload = json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    except (ValueError, TypeError, OverflowError) as exc:
+        raise BaselineError("baseline cannot be serialized as finite JSON") from exc
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         with open(path, "x", encoding="utf-8") as handle:
@@ -1089,6 +1192,30 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
     snapshot.set_defaults(handler=_handle_snapshot)
 
 
+def _revalidate_file_recording_context(document: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Strictly revalidate an untrusted comparison FILE's recording context.
+
+    A copied fingerprint proves nothing on its own: the configuration must be
+    complete, typed and known, and the fingerprint has to match a local
+    recomputation. Any defect becomes unknown here, so a hand-written JSON file
+    cannot bypass the checks the CLI applies to live captures. Trusted
+    in-memory callers of :func:`compare_baselines` are unaffected because this
+    runs only at the file entry point.
+    """
+
+    context = document.get("recording_context")
+    if context is None:
+        return document
+    if not isinstance(context, Mapping):
+        raise BaselineError("comparison baseline recording_context must be an object")
+    patched = _sanitize_recording_context(context)
+    if not _valid_fingerprint(context.get("config_fingerprint")):
+        patched["config_fingerprint"] = None
+    result = dict(document)
+    result["recording_context"] = patched
+    return result
+
+
 def _handle_baseline(args: argparse.Namespace) -> int:
     try:
         metrics_path, _escaped = resolve_project_path_or_escape(args.metrics)
@@ -1107,6 +1234,9 @@ def _handle_baseline(args: argparse.Namespace) -> int:
             previous_path = resolve_project_path(args.compare)
             previous_raw = _read_json(previous_path)
             previous = _validate_comparison_document(previous_raw, label="comparison baseline")
+            # Untrusted file boundary: revalidate the recorded context before
+            # any delta is computed.
+            previous = _revalidate_file_recording_context(previous)
             document["comparison"] = compare_baselines(document, previous)
         write_baseline(document, output_path)
     except BaselineError as exc:
