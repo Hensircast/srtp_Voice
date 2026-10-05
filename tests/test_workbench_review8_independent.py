@@ -26,6 +26,7 @@ def _document():
 def test_cli_copied_fingerprint_does_not_prove_recording_config(tmp_path, monkeypatch, mutation):
     current = _document()
     previous = copy.deepcopy(current)
+    monkeypatch.setattr(latency, "PROJECT_ROOT", tmp_path)
     context = previous["recording_context"]
     if mutation == "empty":
         context["config"] = {}
